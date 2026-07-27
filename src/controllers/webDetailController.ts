@@ -29,8 +29,11 @@ export const getWebDetail = async (request: FastifyRequest, reply: FastifyReply)
     const genreNames = (item.genres || []).map((g: any) => g?.name || g);
     const languageNames = (item.languages || []).map((l: any) => l?.name || l);
 
-    // Video settings
-    const hlsUrl = item.hlsUrl || item.videoUrl;
+    // Video settings — never use blob: browser preview URLs
+    const hlsUrl =
+      [item.hlsUrl, item.videoUrl, item.sourceVideoUrl].find(
+        (u: any) => typeof u === 'string' && u.trim() && !u.startsWith('blob:')
+      ) || '';
     const qualities: any[] = item.videoQualities || [];
     const videoSettings = hlsUrl
       ? [
@@ -105,9 +108,13 @@ export const getWebDetail = async (request: FastifyRequest, reply: FastifyReply)
       languages: languageNames,
       genres: genreNames,
       genresText: genreNames.join(' & '),
-      trailerUrl: item.trailerUrl,
-      videoUrl: hlsUrl,
-      hlsUrl: hlsUrl,
+      trailerUrl: item.trailerUrl && !String(item.trailerUrl).startsWith('blob:') ? item.trailerUrl : null,
+      videoUrl: hlsUrl || null,
+      hlsUrl: hlsUrl || null,
+      sourceVideoUrl:
+        item.sourceVideoUrl && !String(item.sourceVideoUrl).startsWith('blob:')
+          ? item.sourceVideoUrl
+          : null,
       videoSettings,
       playbackSpeeds,
       subtitles: (item.subtitles || [])

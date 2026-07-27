@@ -11,6 +11,7 @@ import {
   downloadFromS3ToFile,
   uploadHlsFolderToS3,
   getHlsPublicBaseUrl,
+  getS3ObjectSize,
 } from './s3';
 import { probeVideo, extractPosterFrame, resolveProbeInput, sanitizeFfmpegError } from './videoProbe';
 import {
@@ -39,11 +40,16 @@ const QUALITY_PRESETS = [
   { quality: '1080p', height: 1080, bitrate: 4500 },
 ];
 
-/** Keep local EC2 transcodes fast — max 3 ladders (prefer mid + high) */
-function pickLocalPresets(sourceHeight: number) {
+/** Keep local EC2 transcodes fast — fewer ladders for big files */
+function pickLocalPresets(sourceHeight: number, fileSize = 0) {
+  // Very large files: single ladder only (EC2 cannot finish multi-quality in time)
+  if (fileSize >= 400 * 1024 * 1024) {
+    const h = Math.min(720, Math.max(360, sourceHeight || 720));
+    const match = QUALITY_PRESETS.find((p) => p.height === 720) || QUALITY_PRESETS[QUALITY_PRESETS.length - 1];
+    return [{ ...match, height: Math.min(match.height, h) }];
+  }
   const applicable = QUALITY_PRESETS.filter((p) => p.height <= Math.max(sourceHeight || 720, 360));
   if (applicable.length <= 3) return applicable.length ? applicable : [QUALITY_PRESETS[0]];
-  // e.g. 1080p source → 480p, 720p, 1080p
   return [
     applicable.find((p) => p.quality === '480p') || applicable[Math.floor(applicable.length / 2)],
     applicable.find((p) => p.quality === '720p') || applicable[applicable.length - 2],
@@ -209,7 +215,7 @@ async function transcodeLocalFfmpeg(
     }
     await mediaFile.save();
 
-    const applicablePresets = pickLocalPresets(info.height);
+    const applicablePresets = pickLocalPresets(info.height, Number(mediaFile.fileSize) || 0);
 
     const hlsOutputDir = path.join(UPLOADS_ROOT, 'hls', mediaFile._id.toString());
     if (!fs.existsSync(hlsOutputDir)) fs.mkdirSync(hlsOutputDir, { recursive: true });
@@ -336,6 +342,42 @@ export const transcodeToHls = async (
       } catch (awsErr) {
         logger.error({ awsErr, mediaFileId }, 'MediaConvert failed — falling back to local ffmpeg');
       }
+    }
+
+    let fileSize = Number((refreshed as any).fileSize) || 0;
+    // DB may be missing size — check S3 before downloading multi‑GB objects
+    if (fileSize < 400 * 1024 * 1024 && refreshed.s3Key && (await isS3Configured())) {
+      const s3Size = await getS3ObjectSize(String(refreshed.s3Key));
+      if (s3Size > 0) {
+        fileSize = s3Size;
+        (refreshed as any).fileSize = s3Size;
+      }
+    }
+
+    // Large local HLS OOMs / hours on small EC2 — mark progressive MP4 ready (playable immediately)
+    if (fileSize >= 400 * 1024 * 1024) {
+      if (!refreshed.url) throw new Error('No playable URL for large video');
+      refreshed.isHls = true;
+      refreshed.hlsMasterPlaylistUrl = refreshed.url;
+      refreshed.hlsMasterPlaylistPath = refreshed.url;
+      refreshed.hlsQualities = [
+        {
+          quality: 'source',
+          url: refreshed.url,
+          filePath: refreshed.url,
+          bitrate: 0,
+          resolution: 'source',
+        },
+      ];
+      refreshed.hlsStatus = 'completed';
+      (refreshed as any).transcoder = 'progressive';
+      refreshed.hlsError = undefined;
+      await refreshed.save();
+      logger.info(
+        { mediaFileId, fileSize },
+        'Large video — progressive MP4 ready (enable AWS MediaConvert for multi-quality HLS)'
+      );
+      return;
     }
 
     await transcodeLocalFfmpeg(refreshed, inputFilePath, storageType);

@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import fs from 'fs';
 import path from 'path';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -269,4 +269,21 @@ export async function uploadHlsFolderToS3(localFolderPath: string, s3Prefix: str
   await uploadDir(localFolderPath, s3Prefix.replace(/\/$/, ''));
   logger.info({ s3Prefix, uploadCount }, 'HLS folder uploaded to S3');
   return uploadCount;
+}
+
+/** HeadObject ContentLength — used to skip multi‑GB local HLS downloads */
+export async function getS3ObjectSize(key: string): Promise<number> {
+  const settings = await getS3Settings();
+  if (!settings.accessKeyId || !settings.secretAccessKey) return 0;
+  const s3Client = await getS3Client();
+  const cleanKey = key.replace(/^\/+/, '').replace(/^uploads\//, '');
+  try {
+    const head = await s3Client.send(
+      new HeadObjectCommand({ Bucket: settings.bucket, Key: cleanKey })
+    );
+    return Number(head.ContentLength) || 0;
+  } catch (err) {
+    logger.warn({ err, key: cleanKey }, 'S3 HeadObject failed');
+    return 0;
+  }
 }
