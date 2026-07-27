@@ -516,3 +516,132 @@ export const deleteFile = async (request: FastifyRequest, reply: FastifyReply) =
     return reply.status(500).send({ success: false, error: error.message });
   }
 };
+
+/**
+ * Presign a direct browser → S3 upload (much faster than proxying through the API).
+ * Body: { fileName, contentType, folderId?, source? }
+ */
+export const presignMediaUpload = async (request: FastifyRequest, reply: FastifyReply) => {
+  try {
+    const body = request.body as {
+      fileName?: string;
+      contentType?: string;
+      folderId?: string;
+      source?: string;
+    };
+
+    if (!body?.fileName || !body?.contentType) {
+      return reply.status(400).send({ success: false, error: 'fileName and contentType are required' });
+    }
+
+    const { isS3Configured, generatePresignedUrl } = await import('../lib/s3');
+    if (!(await isS3Configured())) {
+      return reply.status(400).send({
+        success: false,
+        error: 'S3 is not configured — use the normal multipart upload',
+        code: 'S3_NOT_CONFIGURED',
+      });
+    }
+
+    let folderId = body.folderId;
+    if (folderId && !Types.ObjectId.isValid(folderId)) {
+      return reply.status(400).send({ success: false, error: 'Invalid folder ID' });
+    }
+
+    if (!folderId) {
+      // Resolve/create folder by source name
+      const source = (body.source || 'media-library').trim();
+      let folder = await MediaFolderModel.findOne({
+        name: { $regex: new RegExp(`^${source}$`, 'i') },
+        parentFolder: null,
+      });
+      if (!folder) {
+        folder = await MediaFolderModel.create({ name: source, parentFolder: null });
+      }
+      folderId = folder._id.toString();
+    }
+
+    const uniqueName = uploadHandler.generateUniqueFileName(body.fileName);
+    const key = `media/${folderId}/${uniqueName}`;
+    const signed = await generatePresignedUrl(key, body.contentType, 3600);
+
+    return reply.send({
+      success: true,
+      data: {
+        uploadUrl: signed.uploadUrl,
+        publicUrl: signed.publicUrl,
+        key,
+        folderId,
+        fileName: uniqueName,
+        originalName: body.fileName,
+        contentType: body.contentType,
+      },
+    });
+  } catch (error: any) {
+    logger.error({ error }, 'Error presigning media upload');
+    return reply.status(500).send({ success: false, error: error.message });
+  }
+};
+
+/**
+ * After browser finishes PUT to S3, register the MediaFile and kick off HLS for videos.
+ */
+export const confirmS3MediaUpload = async (request: FastifyRequest, reply: FastifyReply) => {
+  try {
+    const body = request.body as {
+      key?: string;
+      publicUrl?: string;
+      folderId?: string;
+      fileName?: string;
+      originalName?: string;
+      contentType?: string;
+      fileSize?: number;
+      source?: string;
+    };
+
+    if (!body?.key || !body?.publicUrl || !body?.folderId) {
+      return reply.status(400).send({ success: false, error: 'key, publicUrl and folderId are required' });
+    }
+
+    const isVideo =
+      (body.contentType || '').startsWith('video/') ||
+      /\.(mp4|webm|mov|mkv|avi|m4v)$/i.test(body.originalName || body.fileName || '');
+
+    const createPayload: Record<string, any> = {
+      name: body.originalName || body.fileName || path.basename(body.key),
+      url: body.publicUrl,
+      filePath: body.key,
+      fileSize: Number(body.fileSize) || 0,
+      fileType: body.contentType || 'application/octet-stream',
+      folder: new Types.ObjectId(body.folderId),
+      source: body.source || 'media-library',
+      storageType: 's3',
+      s3Key: body.key,
+    };
+    if (isVideo) createPayload.hlsStatus = 'processing';
+
+    const mediaFile = await MediaFileModel.create(createPayload);
+
+    if (isVideo) {
+      const { transcodeToHls } = await import('../services/videoProcessor');
+      const protocol = request.protocol;
+      const host = request.headers.host;
+      const baseUrl = `${protocol}://${host}`;
+      transcodeToHls(mediaFile._id.toString(), '', baseUrl, 's3').catch((err) => {
+        logger.error({ err, mediaFileId: mediaFile._id }, 'Failed to transcode video to HLS after direct S3 upload');
+      });
+    }
+
+    return reply.status(201).send({
+      success: true,
+      data: {
+        ...mediaFile.toObject(),
+        id: mediaFile._id.toString(),
+        mediaFileId: mediaFile._id.toString(),
+      },
+    });
+  } catch (error: any) {
+    logger.error({ error }, 'Error confirming S3 media upload');
+    return reply.status(500).send({ success: false, error: error.message });
+  }
+};

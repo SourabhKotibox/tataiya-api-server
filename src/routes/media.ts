@@ -11,6 +11,8 @@ import {
   getMediaFileById,
   reprocessMediaHls,
   seedDefaultFolders,
+  presignMediaUpload,
+  confirmS3MediaUpload,
 } from '../controllers/mediaController';
 
 const media: FastifyPluginAsync = async (fastify) => {
@@ -28,6 +30,8 @@ const media: FastifyPluginAsync = async (fastify) => {
   fastify.get('/files/:id', { onRequest: [requirePermission('mediaLibrary', 'canView')] }, getMediaFileById);
   fastify.post('/files/:id/reprocess-hls', { onRequest: [requirePermission('mediaLibrary', 'canCreate')] }, reprocessMediaHls);
   fastify.post('/folders/:id/files', { onRequest: [requirePermission('mediaLibrary', 'canCreate')] }, uploadFilesToFolder);
+  fastify.post('/presign', { onRequest: [requirePermission('mediaLibrary', 'canCreate')] }, presignMediaUpload);
+  fastify.post('/confirm-s3', { onRequest: [requirePermission('mediaLibrary', 'canCreate')] }, confirmS3MediaUpload);
   fastify.delete('/files/:id', { onRequest: [requirePermission('mediaLibrary', 'canDelete')] }, deleteFile);
 };
 
