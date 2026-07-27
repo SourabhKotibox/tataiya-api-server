@@ -4,6 +4,31 @@ import { GenreModel } from '../models/Genre';
 import { BannerModel } from '../models/Banner';
 import { logger } from '../lib/logger';
 
+const S3_PUBLIC_BASE =
+  (process.env.AWS_S3_PUBLIC_BASE_URL || 'https://tatiyatv.s3.eu-north-1.amazonaws.com').replace(/\/$/, '');
+
+/** Turn relative media keys / legacy /uploads paths into absolute public URLs */
+const resolveMediaUrl = (value?: string | null): string => {
+  if (!value) return '';
+  if (/^https?:\/\//i.test(value) || value.startsWith('data:') || value.startsWith('blob:')) {
+    const m = value.match(/^https?:\/\/(?:www\.)?tataiya\.in\/uploads\/(media\/.+)$/i);
+    if (m) return `${S3_PUBLIC_BASE}/${m[1]}`;
+    return value;
+  }
+  if (value.startsWith('/uploads/')) {
+    const key = value.replace(/^\/uploads\//, '');
+    if (key.startsWith('media/')) return `${S3_PUBLIC_BASE}/${key}`;
+    return value; // local non-media uploads stay relative for nginx
+  }
+  if (value.startsWith('uploads/')) {
+    const key = value.replace(/^uploads\//, '');
+    if (key.startsWith('media/')) return `${S3_PUBLIC_BASE}/${key}`;
+  }
+  // Bare S3 key e.g. media/folder/file.jpg
+  if (value.startsWith('media/')) return `${S3_PUBLIC_BASE}/${value}`;
+  return value;
+};
+
 const formatDuration = (duration: any): string => {
   if (!duration && duration !== 0) return '120m';
   if (typeof duration === 'string' && /[hm]/i.test(duration)) return duration;
@@ -31,8 +56,8 @@ const mapContentItem = (item: any, isHero = false) => {
   return {
     id: item._id.toString(),
     title: item.title,
-    poster: item.posterImage || item.thumbnail || '',
-    backdrop: item.bannerImage || item.thumbnail || '',
+    poster: resolveMediaUrl(item.posterImage || item.thumbnail || ''),
+    backdrop: resolveMediaUrl(item.bannerImage || item.thumbnail || ''),
     type: 'movie',
     contentType: 'movie',
     year: item.year?.toString() || new Date(item.createdAt).getFullYear().toString(),
@@ -43,9 +68,9 @@ const mapContentItem = (item: any, isHero = false) => {
     language: item.languages && item.languages.length > 0 ? 'Multi' : 'EN',
     badge,
     genres: (item.genres || []).map((g: any) => g?.name || g),
-    trailerUrl: item.trailerUrl || null,
-    hlsUrl: item.hlsUrl || item.videoUrl || null,
-    videoUrl: item.videoUrl || item.hlsUrl || null,
+    trailerUrl: resolveMediaUrl(item.trailerUrl || '') || null,
+    hlsUrl: resolveMediaUrl(item.hlsUrl || item.videoUrl || '') || null,
+    videoUrl: resolveMediaUrl(item.videoUrl || item.hlsUrl || '') || null,
     planRequired: item.planRequired || 'free',
     isPremium: item.planRequired && item.planRequired !== 'free',
   };
@@ -90,12 +115,15 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
 
         return bannersRaw.map((banner: any) => {
           const content = banner.contentId ? contentMap.get(banner.contentId.toString()) : null;
+          const bannerImage = resolveMediaUrl(banner.imageUrl || '');
           if (content) {
             return {
               id: content._id.toString(),
               title: banner.title || content.title,
-              poster: banner.imageUrl || content.posterImage || content.thumbnail || '',
-              backdrop: content.bannerImage || banner.imageUrl || content.thumbnail || '',
+              poster: bannerImage || resolveMediaUrl(content.posterImage || content.thumbnail || ''),
+              backdrop:
+                bannerImage ||
+                resolveMediaUrl(content.bannerImage || content.thumbnail || ''),
               type: 'movie',
               contentType: 'movie',
               year: content.year?.toString() || new Date(content.createdAt).getFullYear().toString(),
@@ -106,19 +134,20 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
               language: content.languages && content.languages.length > 0 ? 'Multi' : 'EN',
               badge: banner.type?.toUpperCase() || 'EXCLUSIVE',
               genres: (content.genres || []).map((g: any) => g?.name || g),
-              trailerUrl: content.trailerUrl || null,
-              hlsUrl: content.hlsUrl || content.videoUrl || null,
-              videoUrl: content.videoUrl || content.hlsUrl || null,
+              trailerUrl: resolveMediaUrl(content.trailerUrl || '') || null,
+              hlsUrl: resolveMediaUrl(content.hlsUrl || content.videoUrl || '') || null,
+              videoUrl: resolveMediaUrl(content.videoUrl || content.hlsUrl || '') || null,
               planRequired: content.planRequired || 'free',
               isPremium: content.planRequired && content.planRequired !== 'free',
+              isBanner: true,
             };
           } else {
             // Banner without linked content
             return {
               id: banner._id.toString(),
               title: banner.title,
-              poster: banner.imageUrl || '',
-              backdrop: banner.imageUrl || '',
+              poster: bannerImage,
+              backdrop: bannerImage,
               type: 'movie',
               contentType: 'movie',
               year: new Date(banner.createdAt).getFullYear().toString(),
@@ -131,6 +160,7 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
               genres: [],
               ctaLink: banner.ctaLink,
               ctaText: banner.ctaText,
+              isBanner: true,
             };
           }
         });
@@ -176,15 +206,25 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
       trendingNow = topRated.slice(0, 10).map((m: any) => ({ ...m, badge: m.badge || 'TRENDING' }));
     }
 
-    // Prefer hero slides that can play video (trailer or movie). Fill gaps from published movies.
+    // Keep admin-created banners even if they are image-only (no trailer/video yet).
+    // Only fill empty slots with playable movies when there are no banners at all.
     const playablePool = [
       ...topRated,
       ...trendingNow,
       ...newReleases,
     ].filter((m: any) => m.trailerUrl || m.hlsUrl || m.videoUrl);
 
+    const bannerSlides = heroContent.filter((h: any) => h.isBanner || h.poster || h.backdrop);
     const withVideo = heroContent.filter((h: any) => h.trailerUrl || h.hlsUrl || h.videoUrl);
-    if (withVideo.length === 0 && playablePool.length > 0) {
+
+    if (bannerSlides.length > 0) {
+      // Prefer banners first; append extra playable movies if needed
+      const ids = new Set(bannerSlides.map((h: any) => h.id));
+      heroContent = [
+        ...bannerSlides,
+        ...playablePool.filter((m: any) => !ids.has(m.id)).slice(0, Math.max(0, 8 - bannerSlides.length)),
+      ];
+    } else if (withVideo.length === 0 && playablePool.length > 0) {
       heroContent = playablePool.slice(0, 8);
     } else if (withVideo.length < 3 && playablePool.length > 0) {
       const ids = new Set(withVideo.map((h: any) => h.id));
