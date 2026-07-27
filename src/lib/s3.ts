@@ -158,6 +158,34 @@ export async function downloadFromS3ToFile(s3Key: string, destPath: string): Pro
   });
 }
 
+/** Download only the first N bytes — enough for ffprobe without pulling multi‑GB files */
+export async function downloadS3RangeToFile(
+  s3Key: string,
+  destPath: string,
+  maxBytes = 48 * 1024 * 1024
+): Promise<void> {
+  const settings = await getS3Settings();
+  const s3Client = await getS3Client();
+  const response = await s3Client.send(
+    new GetObjectCommand({
+      Bucket: settings.bucket,
+      Key: s3Key.replace(/^\/+/, ''),
+      Range: `bytes=0-${Math.max(0, maxBytes - 1)}`,
+    })
+  );
+  if (!response.Body) throw new Error('No response body from S3 range get');
+
+  await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
+  const body = response.Body as Readable;
+  await new Promise<void>((resolve, reject) => {
+    const write = fs.createWriteStream(destPath);
+    body.pipe(write);
+    write.on('finish', () => resolve());
+    write.on('error', reject);
+    body.on('error', reject);
+  });
+}
+
 export async function deleteFromS3(key: string): Promise<void> {
   const settings = await getS3Settings();
   if (!settings.accessKeyId || !settings.secretAccessKey || settings.storageDriver !== 's3') {

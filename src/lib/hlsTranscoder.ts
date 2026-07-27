@@ -11,9 +11,8 @@ import {
   downloadFromS3ToFile,
   uploadHlsFolderToS3,
   getHlsPublicBaseUrl,
-  getS3PublicUrl,
 } from './s3';
-import { probeVideo, extractPosterFrame, resolveProbeInput } from './videoProbe';
+import { probeVideo, extractPosterFrame, resolveProbeInput, sanitizeFfmpegError } from './videoProbe';
 import {
   isMediaConvertEnabled,
   startMediaConvertHlsJob,
@@ -68,17 +67,20 @@ export async function enrichVideoMetadata(mediaFileId: string): Promise<void> {
   const mediaFile = await MediaFileModel.findById(mediaFileId);
   if (!mediaFile) return;
 
+  let cleanup: string | undefined;
   try {
     const s3Key = (mediaFile as any).s3Key as string | undefined;
-    const input = await resolveProbeInput({
+    const resolved = await resolveProbeInput({
       localPath: mediaFile.filePath?.startsWith('/uploads/')
         ? path.join(UPLOADS_ROOT, mediaFile.filePath.replace(/^\/uploads\//, ''))
         : undefined,
       s3Key,
       publicUrl: mediaFile.url,
+      mediaFileId,
     });
+    cleanup = resolved.cleanup;
 
-    const info = await probeVideo(input);
+    const info = await probeVideo(resolved.path);
     mediaFile.duration = info.duration;
     (mediaFile as any).width = info.width;
     (mediaFile as any).height = info.height;
@@ -87,7 +89,7 @@ export async function enrichVideoMetadata(mediaFileId: string): Promise<void> {
     (mediaFile as any).fps = info.fps;
 
     if (!(mediaFile as any).posterFrameUrl) {
-      const poster = await extractPosterFrame(input, mediaFileId, info.duration);
+      const poster = await extractPosterFrame(resolved.path, mediaFileId, info.duration);
       if (poster) (mediaFile as any).posterFrameUrl = poster;
     }
 
@@ -97,7 +99,15 @@ export async function enrichVideoMetadata(mediaFileId: string): Promise<void> {
       'Video metadata enriched for auto-fill'
     );
   } catch (err) {
-    logger.warn({ err, mediaFileId }, 'Video metadata enrich failed');
+    logger.warn({ err: sanitizeFfmpegError(err), mediaFileId }, 'Video metadata enrich failed');
+  } finally {
+    if (cleanup && fs.existsSync(cleanup)) {
+      try {
+        fs.unlinkSync(cleanup);
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
 
@@ -171,25 +181,18 @@ async function transcodeLocalFfmpeg(
     const useS3 =
       storageType === 's3' || ((await isS3Configured()) && mediaFile.storageType === 's3');
 
-    // Prefer public HTTPS URL for ffmpeg (no multi‑GB download to EC2 disk)
-    if (useS3) {
-      if (mediaFile.url && /^https?:\/\//i.test(mediaFile.url)) {
-        sourcePath = mediaFile.url;
-      } else if (mediaFile.s3Key) {
-        sourcePath = await getS3PublicUrl(mediaFile.s3Key);
-      }
-    }
-
-    if ((!sourcePath || (sourcePath && !sourcePath.startsWith('http') && !fs.existsSync(sourcePath))) && useS3 && mediaFile.s3Key) {
+    // Always use a local file for ffmpeg/ffprobe — HTTPS URLs crash static ffprobe (SIGSEGV)
+    if (useS3 && mediaFile.s3Key) {
       tempDownload = path.join(
         TEMP_DIR,
         `${mediaFile._id}-${Date.now()}${path.extname(mediaFile.s3Key) || '.mp4'}`
       );
+      logger.info({ mediaFileId: mediaFile._id, s3Key: mediaFile.s3Key }, 'Downloading S3 video for local HLS');
       await downloadFromS3ToFile(mediaFile.s3Key, tempDownload);
       sourcePath = tempDownload;
     }
 
-    if (!sourcePath || (!sourcePath.startsWith('http') && !fs.existsSync(sourcePath))) {
+    if (!sourcePath || !fs.existsSync(sourcePath)) {
       throw new Error('Source video file not found for HLS transcoding');
     }
 
@@ -337,9 +340,9 @@ export const transcodeToHls = async (
 
     await transcodeLocalFfmpeg(refreshed, inputFilePath, storageType);
   } catch (error) {
-    logger.error({ error }, 'Error transcoding to HLS');
+    logger.error({ error: sanitizeFfmpegError(error) }, 'Error transcoding to HLS');
     mediaFile.hlsStatus = 'failed';
-    mediaFile.hlsError = error instanceof Error ? error.message : String(error);
+    mediaFile.hlsError = sanitizeFfmpegError(error);
     await mediaFile.save();
     throw error;
   }
