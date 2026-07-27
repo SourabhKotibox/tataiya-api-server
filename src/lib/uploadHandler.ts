@@ -202,6 +202,25 @@ export const saveFileFromPart = async (
       displayName = path.basename(finalKey);
     }
 
+    // Compress movie covers / images → WebP (same look, less space)
+    if (!isVideoFile(part.filename, mimeType)) {
+      const { optimizeImageBuffer, inferPreset, isOptimizableImage } = await import('./imageOptimizer');
+      if (isOptimizableImage(part.filename, mimeType)) {
+        const optimized = await optimizeImageBuffer(
+          buffer,
+          part.filename,
+          mimeType,
+          inferPreset(part.filename, options?.source, uploadType)
+        );
+        if (!optimized.skipped) {
+          buffer = optimized.buffer;
+          mimeType = optimized.mimeType;
+          finalKey = finalKey.replace(/\.[^.]+$/, '') + optimized.extension;
+          displayName = path.basename(finalKey);
+        }
+      }
+    }
+
     const contentHash = crypto.createHash('sha256').update(buffer).digest('hex');
     const existingFile = await MediaFileModel.findOne({
       $or: [{ contentHash }, { name: part.filename, fileSize: buffer.length }],
@@ -339,13 +358,42 @@ export const saveFileFromPart = async (
           }
         }
 
+        let mimeType = finalRelative.endsWith('.vtt')
+          ? 'text/vtt'
+          : (part.mimetype || 'application/octet-stream');
+
+        // Compress images on local storage path too
+        if (!isVideoFile(part.filename, part.mimetype || '')) {
+          const { optimizeImageBuffer, inferPreset, isOptimizableImage } = await import('./imageOptimizer');
+          if (isOptimizableImage(part.filename, part.mimetype)) {
+            const inputBuf = fs.readFileSync(finalAbs);
+            const optimized = await optimizeImageBuffer(
+              inputBuf,
+              part.filename,
+              part.mimetype,
+              inferPreset(part.filename, options?.source, uploadType)
+            );
+            if (!optimized.skipped) {
+              const newRel = finalRelative.replace(/\.[^.]+$/, '') + optimized.extension;
+              const newAbs = path.join(UPLOADS_ROOT, newRel);
+              fs.writeFileSync(newAbs, optimized.buffer);
+              if (newAbs !== finalAbs && fs.existsSync(finalAbs)) {
+                try { fs.unlinkSync(finalAbs); } catch { /* ignore */ }
+              }
+              finalRelative = newRel.replace(/\\/g, '/');
+              finalAbs = newAbs;
+              mimeType = optimized.mimeType;
+            }
+          }
+        }
+
         const fileInfo: UploadedFileInfo = {
           originalName: part.filename,
           fileName: path.basename(finalRelative),
           filePath: `/uploads/${finalRelative}`,
           url: `${baseUrl}/uploads/${finalRelative}`,
           fileSize: fs.existsSync(finalAbs) ? fs.statSync(finalAbs).size : stats.size,
-          mimeType: finalRelative.endsWith('.vtt') ? 'text/vtt' : (part.mimetype || 'application/octet-stream'),
+          mimeType,
           uploadType,
           storageType: 'local',
         };

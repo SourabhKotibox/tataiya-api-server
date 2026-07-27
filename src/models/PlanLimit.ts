@@ -8,6 +8,7 @@ export interface IPlanLimit extends Document {
   deviceLimit: boolean;
   deviceLimitCount: number;
   downloadStatus: boolean;
+  downloadLimitCount: number;
   supportedDeviceType: boolean;
   supportedDevices: string[];
   profileLimit: boolean;
@@ -30,6 +31,7 @@ const PlanLimitSchema = new Schema<IPlanLimit>(
     deviceLimit: { type: Boolean, default: false },
     deviceLimitCount: { type: Number, default: 1 },
     downloadStatus: { type: Boolean, default: false },
+    downloadLimitCount: { type: Number, default: 5 },
     supportedDeviceType: { type: Boolean, default: false },
     supportedDevices: { type: [String], default: [] },
     profileLimit: { type: Boolean, default: false },

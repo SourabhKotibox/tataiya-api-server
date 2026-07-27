@@ -3,6 +3,8 @@ import mongoose from 'mongoose';
 import { UserModel } from '../models/User';
 import { MovieModel } from '../models/Movie';
 import { UserDownloadModel } from '../models/UserDownload';
+import { SubscriptionPlanModel } from '../models/SubscriptionPlan';
+import { PlanLimitModel } from '../models/PlanLimit';
 import { logger } from '../lib/logger';
 
 // Helper to format bytes to MB
@@ -45,6 +47,35 @@ const pickDownloadUrl = (movie: any, request: FastifyRequest): string => {
   return '';
 };
 
+async function resolveDownloadLimits(user: any): Promise<{ allowed: boolean; max: number; reason?: string }> {
+  const planName = String(user.subscriptionPlan || 'free');
+  const isActive =
+    user.subscriptionStatus === 'active' &&
+    (!user.subscriptionExpiry || new Date(user.subscriptionExpiry) > new Date()) &&
+    planName.toLowerCase() !== 'free';
+
+  if (!isActive) {
+    return { allowed: false, max: 0, reason: 'Active subscription required to download content.' };
+  }
+
+  const plan = await SubscriptionPlanModel.findOne({
+    name: { $regex: new RegExp(`^${planName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+  }).lean();
+
+  if (!plan) {
+    // Paid active user without matching plan doc — allow a safe default
+    return { allowed: true, max: 10 };
+  }
+
+  const limits = await PlanLimitModel.findOne({ planId: plan._id }).lean();
+  if (!limits) return { allowed: true, max: 10 };
+  if (!limits.downloadStatus) {
+    return { allowed: false, max: 0, reason: 'Downloads are not included in your plan. Please upgrade.' };
+  }
+  const max = Math.max(0, Number((limits as any).downloadLimitCount ?? 10));
+  return { allowed: true, max };
+}
+
 export const requestDownload = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
     const userPayload = (request as any).user;
@@ -52,18 +83,18 @@ export const requestDownload = async (request: FastifyRequest, reply: FastifyRep
       return reply.status(401).send({ success: false, message: 'Unauthorized' });
     }
     const userId = userPayload.id;
-    // Cast userId string to ObjectId for all DB queries
     const userObjectId = new mongoose.Types.ObjectId(userId);
 
-    // Check user subscription status
-    const user = await UserModel.findById(userObjectId).select('subscriptionStatus subscriptionExpiry').lean();
+    const user = await UserModel.findById(userObjectId)
+      .select('subscriptionStatus subscriptionExpiry subscriptionPlan')
+      .lean();
     if (!user) {
       return reply.status(404).send({ success: false, message: 'User not found' });
     }
 
-    const isActive = user.subscriptionStatus === 'active' && (!user.subscriptionExpiry || user.subscriptionExpiry > new Date());
-    if (!isActive) {
-      return reply.status(403).send({ success: false, message: 'Active subscription required to download content.' });
+    const limits = await resolveDownloadLimits(user);
+    if (!limits.allowed) {
+      return reply.status(403).send({ success: false, message: limits.reason || 'Downloads not allowed' });
     }
 
     const { contentId } = request.body as {
@@ -73,6 +104,20 @@ export const requestDownload = async (request: FastifyRequest, reply: FastifyRep
 
     if (!mongoose.Types.ObjectId.isValid(contentId)) {
       return reply.status(400).send({ success: false, message: 'Invalid contentId' });
+    }
+
+    const existing = await UserDownloadModel.findOne({ userId: userObjectId, contentId }).lean();
+    if (!existing) {
+      const count = await UserDownloadModel.countDocuments({ userId: userObjectId });
+      if (count >= limits.max) {
+        return reply.status(403).send({
+          success: false,
+          message: `Download limit reached (${limits.max}). Remove an old download or upgrade your plan.`,
+          code: 'DOWNLOAD_LIMIT',
+          limit: limits.max,
+          used: count,
+        });
+      }
     }
 
     const movie = await MovieModel.findById(contentId).lean();
@@ -99,12 +144,13 @@ export const requestDownload = async (request: FastifyRequest, reply: FastifyRep
       url: toAbsoluteUrl(request, q.url)
     }));
 
-    // Upsert download record
     const downloadDoc: any = await UserDownloadModel.findOneAndUpdate(
       { userId: userObjectId, contentId },
       { $setOnInsert: { contentModelType: 'Movie' } },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
+
+    const used = await UserDownloadModel.countDocuments({ userId: userObjectId });
 
     return reply.send({
       success: true,
@@ -118,14 +164,13 @@ export const requestDownload = async (request: FastifyRequest, reply: FastifyRep
         duration: duration,
         downloadUrl: downloadUrl,
         videoQualities: qualities,
-        status: downloadDoc.status || 'pending',
-        progress: downloadDoc.progress || 0,
-        createdAt: downloadDoc.createdAt
-      }
+        downloadLimit: limits.max,
+        downloadUsed: used,
+      },
     });
   } catch (error: any) {
-    logger.error(error, 'Error requesting download');
-    return reply.status(500).send({ success: false, message: 'Failed to request download.', error: error.message });
+    logger.error({ error }, 'requestDownload failed');
+    return reply.status(500).send({ success: false, message: error.message });
   }
 };
 

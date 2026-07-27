@@ -15,33 +15,61 @@ const formatDate = (value: Date | string) => {
   return date.toISOString().split('T')[0];
 };
 
-const formatDurationLabel = (duration: string, durationValue: number) => {
-  if (!duration) return '';
-  if (/\d/.test(duration)) return duration;
-  if (durationValue <= 1) return `${durationValue} ${duration}`;
-  return `${durationValue} ${duration.endsWith('s') ? duration : `${duration}s`}`;
+/** Map plan display names → User.subscriptionPlan enum */
+export const normalizePlanKey = (
+  name?: string | null
+): 'free' | 'basic' | 'standard' | 'premium' => {
+  const n = String(name || 'free').toLowerCase().trim();
+  if (!n || n === 'free') return 'free';
+  if (n.includes('premium') || n.includes('vip')) return 'premium';
+  if (n.includes('standard')) return 'standard';
+  if (n.includes('basic')) return 'basic';
+  // Any other paid plan name → standard access tier
+  return 'standard';
 };
 
+const formatDurationLabel = (duration: string, durationValue: number) => {
+  const d = String(duration || '').toLowerCase();
+  const n = Math.max(1, durationValue || 1);
+  if (d.includes('day')) return n === 1 ? '1 Day' : `${n} Days`;
+  if (d.includes('week')) return n === 1 ? '1 Week' : `${n} Weeks`;
+  if (d.includes('year')) return n === 1 ? '1 Year' : `${n} Years`;
+  if (d.includes('month')) return n === 1 ? '1 Month' : `${n} Months`;
+  if (/\d/.test(duration) && !d.includes('month')) return duration;
+  return `${n} ${duration || 'Month'}`;
+};
+
+/**
+ * durationValue semantics:
+ * - "Day(s)" → days
+ * - "Week(s)" → weeks
+ * - "Month(s)/Monthly" → months (if value looks like days for monthly, e.g. 30 with Monthly, treat as 1 month)
+ * - "Year(s)" → years
+ */
 const addDuration = (start: Date, duration: string, durationValue: number) => {
   const end = new Date(start);
-  const normalized = duration.toLowerCase();
+  const normalized = String(duration || '').toLowerCase();
+  let value = Math.max(1, Math.trunc(durationValue || 1));
+
+  // Common misconfig: Monthly + durationValue 30 (meant ₹30 / 30 days) → 1 month
+  if (normalized.includes('month') && value >= 28 && value <= 31) {
+    value = 1;
+  }
 
   if (normalized.includes('day')) {
-    end.setDate(end.getDate() + durationValue);
+    end.setDate(end.getDate() + value);
     return end;
   }
-
   if (normalized.includes('week')) {
-    end.setDate(end.getDate() + durationValue * 7);
+    end.setDate(end.getDate() + value * 7);
     return end;
   }
-
   if (normalized.includes('year')) {
-    end.setFullYear(end.getFullYear() + durationValue);
+    end.setFullYear(end.getFullYear() + value);
     return end;
   }
 
-  end.setMonth(end.getMonth() + durationValue);
+  end.setMonth(end.getMonth() + value);
   return end;
 };
 
@@ -73,6 +101,38 @@ const serializeSubscription = (subscription: any) => {
   };
 };
 
+/** Keep User document in sync so the public site can hide Subscribe */
+export async function syncUserSubscription(
+  userId: any,
+  data: {
+    plan?: string | null;
+    status?: string | null;
+    endDate?: Date | string | null;
+    planId?: any;
+  }
+) {
+  if (!userId) return;
+
+  const status = String(data.status || 'inactive').toLowerCase();
+  const planKey = normalizePlanKey(data.plan);
+  const endDate = data.endDate ? new Date(data.endDate) : undefined;
+  const stillActive =
+    status === 'active' && (!endDate || Number.isNaN(endDate.getTime()) || endDate > new Date());
+
+  await UserModel.findByIdAndUpdate(
+    userId,
+    {
+      $set: {
+        subscriptionPlan: stillActive ? planKey : 'free',
+        subscriptionStatus: stillActive ? 'active' : status === 'cancelled' ? 'cancelled' : 'inactive',
+        subscriptionExpiry: stillActive && endDate ? endDate : endDate || null,
+        subscriptionPlanId: stillActive && data.planId ? data.planId : null,
+      },
+    },
+    { runValidators: true }
+  );
+}
+
 const buildSubscriptionPayload = async (body: Record<string, any>, existing?: any) => {
   const resolvedPlanId = body.planId || existing?.planId;
   const plan = resolvedPlanId ? await SubscriptionPlanModel.findById(resolvedPlanId).lean() : null;
@@ -82,24 +142,25 @@ const buildSubscriptionPayload = async (body: Record<string, any>, existing?: an
   }
 
   const duration = body.duration || plan?.duration || existing?.duration || 'Month';
-  const durationValue = Math.max(
+  let durationValue = Math.max(
     1,
     Math.trunc(toNumber(body.durationValue, plan?.durationValue || existing?.durationValue || 1))
   );
+
+  // Normalize Monthly+30 → 1 month (price was confused with duration)
+  if (String(duration).toLowerCase().includes('month') && durationValue >= 28 && durationValue <= 31) {
+    durationValue = 1;
+  }
 
   const startDate = new Date(body.startDate || body.paymentDate || existing?.startDate || new Date());
   const endDate = body.endDate
     ? new Date(body.endDate)
     : addDuration(startDate, duration, durationValue);
 
-  // The actual base price of the plan
   const price = roundCurrency(toNumber(body.price ?? body.amount, plan?.price ?? existing?.price ?? 0));
-  
-  // The absolute monetary discount (plan.discount is a percentage)
   const discountPercent = plan?.discount || 0;
   const calculatedDiscount = price * (discountPercent / 100);
   const discount = roundCurrency(toNumber(body.discount, existing?.discount ?? calculatedDiscount));
-  
   const couponDiscount = roundCurrency(toNumber(body.couponDiscount, existing?.couponDiscount ?? 0));
   const tax = roundCurrency(toNumber(body.tax, existing?.tax ?? 0));
   const totalAmount = roundCurrency(
@@ -218,14 +279,11 @@ export const createSubscription = async (request: FastifyRequest, reply: Fastify
     const payload = await buildSubscriptionPayload(body);
     const subscription = await SubscriptionModel.create(payload);
 
-    // Update user's subscription fields
-    await UserModel.findByIdAndUpdate(payload.userId, {
-      $set: {
-        subscriptionPlan: payload.plan,
-        subscriptionStatus: payload.status,
-        subscriptionExpiry: payload.endDate,
-        subscriptionPlanId: payload.planId
-      }
+    await syncUserSubscription(payload.userId, {
+      plan: payload.plan,
+      status: payload.status,
+      endDate: payload.endDate,
+      planId: payload.planId,
     });
 
     const created = await SubscriptionModel.findById(subscription._id)
@@ -263,6 +321,13 @@ export const updateSubscription = async (request: FastifyRequest, reply: Fastify
       .populate('planId', 'name')
       .lean();
 
+    await syncUserSubscription(payload.userId || existing.userId, {
+      plan: payload.plan,
+      status: payload.status,
+      endDate: payload.endDate,
+      planId: payload.planId,
+    });
+
     return reply.send({
       success: true,
       data: updated ? serializeSubscription(updated) : null,
@@ -280,6 +345,29 @@ export const deleteSubscription = async (request: FastifyRequest, reply: Fastify
 
     if (!subscription) {
       return reply.status(404).send({ success: false, error: 'Subscription not found' });
+    }
+
+    // Downgrade user unless they still have another active subscription
+    const otherActive = await SubscriptionModel.findOne({
+      userId: subscription.userId,
+      status: 'active',
+      endDate: { $gte: new Date() },
+    }).lean();
+
+    if (otherActive) {
+      await syncUserSubscription(subscription.userId, {
+        plan: otherActive.plan,
+        status: otherActive.status,
+        endDate: otherActive.endDate,
+        planId: otherActive.planId,
+      });
+    } else {
+      await syncUserSubscription(subscription.userId, {
+        plan: 'free',
+        status: 'inactive',
+        endDate: null,
+        planId: null,
+      });
     }
 
     return reply.send({ success: true, message: 'Subscription deleted successfully' });
@@ -356,14 +444,11 @@ export const createRazorpayOrder = async (request: FastifyRequest, reply: Fastif
       const payload = await buildSubscriptionPayload(body);
       const subscription = await SubscriptionModel.create(payload);
 
-      const { UserModel } = await import('../models/User');
-      await UserModel.findByIdAndUpdate(userId, {
-        $set: {
-          subscriptionPlan: payload.plan,
-          subscriptionStatus: payload.status,
-          subscriptionExpiry: payload.endDate,
-          subscriptionPlanId: payload.planId
-        }
+      await syncUserSubscription(userId, {
+        plan: payload.plan,
+        status: payload.status,
+        endDate: payload.endDate,
+        planId: payload.planId,
       });
 
       return reply.send({
@@ -445,19 +530,20 @@ export const verifyRazorpayPayment = async (request: FastifyRequest, reply: Fast
     const payload = await buildSubscriptionPayload(body);
     const subscription = await SubscriptionModel.create(payload);
 
-    await UserModel.findByIdAndUpdate(userId, {
-      $set: {
-        subscriptionPlan: payload.plan,
-        subscriptionStatus: payload.status,
-        subscriptionExpiry: payload.endDate,
-        subscriptionPlanId: payload.planId
-      }
+    await syncUserSubscription(userId, {
+      plan: payload.plan,
+      status: payload.status,
+      endDate: payload.endDate,
+      planId: payload.planId,
     });
 
     return reply.send({
       success: true,
       message: 'Payment verified and subscription activated successfully',
-      subscriptionId: subscription._id
+      subscriptionId: subscription._id,
+      subscriptionPlan: normalizePlanKey(payload.plan),
+      subscriptionStatus: 'active',
+      subscriptionExpiry: payload.endDate,
     });
   } catch (error: any) {
     console.error('Razorpay Verify Error:', error);

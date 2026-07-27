@@ -110,6 +110,52 @@ export const getAppProfile = async (request: FastifyRequest, reply: FastifyReply
         }
       }
       if (user) {
+        // Prefer live Subscription records over stale user fields
+        const liveSub = await SubscriptionModel.findOne({
+          userId: userObjectId,
+          status: 'active',
+          $or: [
+            { endDate: { $gte: new Date() } },
+            { endDate: null },
+            { endDate: { $exists: false } },
+          ],
+        })
+          .sort({ endDate: -1 })
+          .lean();
+
+        if (liveSub) {
+          const planKey = (() => {
+            const n = String(liveSub.plan || '').toLowerCase();
+            if (n.includes('premium')) return 'premium';
+            if (n.includes('standard')) return 'standard';
+            if (n.includes('basic')) return 'basic';
+            if (!n || n === 'free') return 'free';
+            return 'standard';
+          })();
+
+          // Heal stale / wrong-cased user.subscriptionPlan ("Standard" vs "standard")
+          if (
+            user.subscriptionPlan !== planKey ||
+            user.subscriptionStatus !== 'active' ||
+            !user.subscriptionExpiry ||
+            (liveSub.endDate &&
+              new Date(user.subscriptionExpiry).getTime() !== new Date(liveSub.endDate).getTime())
+          ) {
+            await UserModel.findByIdAndUpdate(userObjectId, {
+              $set: {
+                subscriptionPlan: planKey,
+                subscriptionStatus: 'active',
+                subscriptionExpiry: liveSub.endDate || null,
+                subscriptionPlanId: liveSub.planId || null,
+              },
+            });
+            (user as any).subscriptionPlan = planKey;
+            (user as any).subscriptionStatus = 'active';
+            (user as any).subscriptionExpiry = liveSub.endDate;
+            (user as any).subscriptionPlanId = liveSub.planId;
+          }
+        }
+
         // Calculate user sequential number and dynamically format Display ID
         const userNumber = await UserModel.countDocuments({ _id: { $lte: user._id } });
         const settings = await SettingsModel.findOne().lean();
@@ -117,7 +163,9 @@ export const getAppProfile = async (request: FastifyRequest, reply: FastifyReply
         const prefix = appName.substring(0, 4).toUpperCase();
         const displayId = `${prefix}${String(userNumber).padStart(4, '0')}`;
 
-        const plan = await SubscriptionPlanModel.findOne({ name: user.subscriptionPlan }).lean();
+        const plan = await SubscriptionPlanModel.findOne({
+          name: { $regex: new RegExp(`^${String(user.subscriptionPlan || 'free').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+        }).lean();
         let profileLimitCount = 1;
         if (plan) {
           const limit = await PlanLimitModel.findOne({ planId: plan._id }).lean();
@@ -126,8 +174,10 @@ export const getAppProfile = async (request: FastifyRequest, reply: FastifyReply
           }
         }
 
-        const isActive = user.subscriptionStatus === 'active' && 
-                         (!user.subscriptionExpiry || user.subscriptionExpiry > new Date());
+        const isActive =
+          user.subscriptionStatus === 'active' &&
+          (!user.subscriptionExpiry || new Date(user.subscriptionExpiry) > new Date()) &&
+          String(user.subscriptionPlan || 'free').toLowerCase() !== 'free';
 
         userProfile = {
           id: user._id.toString(),
@@ -138,7 +188,8 @@ export const getAppProfile = async (request: FastifyRequest, reply: FastifyReply
           avatar: (user as any).avatar || null,
           subscription: isActive,
           subscriptionStatus: isActive ? 'active' : 'inactive',
-          subscriptionPlan: isActive ? (user.subscriptionPlan || 'free') : 'free',
+          subscriptionPlan: isActive ? String(user.subscriptionPlan || 'standard').toLowerCase() : 'free',
+          subscriptionExpiry: (user as any).subscriptionExpiry || null,
           profileLimitCount,
           videoQuality: user.videoQuality || 'auto',
           preferredLanguage: user.preferredLanguage || 'Hindi',

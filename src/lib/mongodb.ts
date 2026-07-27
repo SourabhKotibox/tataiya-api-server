@@ -46,8 +46,10 @@ export async function connectMongoDB(): Promise<boolean> {
 
   try {
     await mongoose.connect(uri, {
-      serverSelectionTimeoutMS: 30000,
-      connectTimeoutMS: 30000,
+      serverSelectionTimeoutMS: 8000,
+      connectTimeoutMS: 8000,
+      socketTimeoutMS: 45000,
+      maxPoolSize: 10,
     });
     isMongoConnected = true;
     logger.info({ dbName: mongoose.connection.name }, 'MongoDB Atlas connected');

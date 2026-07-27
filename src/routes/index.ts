@@ -138,15 +138,49 @@ const router: FastifyPluginAsync = async (fastify) => {
   // Web Detail page data
   fastify.get('/web-detail/:contentId', getWebDetail);
 
-  // Public notifications (broadcast only — no private user data)
+  // Public notifications (broadcast + recent sent logs)
   fastify.get('/public/notifications', async (request, reply) => {
     try {
       const { NotificationLogModel } = await import('../models/NotificationLog');
-      const notifications = await NotificationLogModel.find({ type: { $in: ['all', 'broadcast', 'announcement', 'promo'] } })
+      let notifications = await NotificationLogModel.find({
+        $or: [
+          { type: { $in: ['all', 'broadcast', 'announcement', 'promo', 'system'] } },
+          { isHighlight: true },
+        ],
+      })
         .sort({ createdAt: -1 })
-        .limit(10)
-        .select('title text type createdAt')
+        .limit(20)
+        .select('title text type createdAt isHighlight')
         .lean();
+
+      // Seed a few defaults if empty so the bell isn't always blank on a new install
+      if (!notifications.length) {
+        const defaults = [
+          {
+            type: 'announcement',
+            isHighlight: true,
+            title: 'Welcome to Tataiya',
+            text: 'Stream premium 18+ movies anytime. Subscribe for full access and downloads.',
+            userName: 'Tataiya',
+            userEmail: 'system@tataiya.in',
+          },
+          {
+            type: 'promo',
+            isHighlight: true,
+            title: 'Standard plan — ₹30/month',
+            text: 'Unlock HD streaming and offline downloads with our Standard plan.',
+            userName: 'Tataiya',
+            userEmail: 'system@tataiya.in',
+          },
+        ];
+        await NotificationLogModel.insertMany(defaults);
+        notifications = await NotificationLogModel.find({})
+          .sort({ createdAt: -1 })
+          .limit(20)
+          .select('title text type createdAt isHighlight')
+          .lean();
+      }
+
       return reply.send({ success: true, data: notifications });
     } catch (error: any) {
       return reply.status(500).send({ success: false, error: error.message });

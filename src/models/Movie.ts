@@ -62,7 +62,7 @@ export interface IMovie extends Document {
   imdbRating?: number;
   maturityContent: string[];
   subtitles?: Array<{ language: mongoose.Types.ObjectId; filePath: string }>;
-  planRequired: 'free' | 'basic' | 'standard' | 'premium';
+  planRequired: string;
   slug?: string;
   metaTitle?: string;
   metaDescription?: string;
@@ -134,7 +134,7 @@ const MovieSchema = new Schema<IMovie>(
     imdbRating: { type: Number, min: 0, max: 10 },
     maturityContent: { type: [String], default: [] },
     subtitles: [{ language: { type: Schema.Types.ObjectId, ref: 'Language' }, filePath: String }],
-    planRequired: { type: String, enum: ['free', 'basic', 'standard', 'premium'], default: 'premium' },
+    planRequired: { type: String, default: 'free', index: true },
     slug: { type: String, index: true },
     metaTitle: String,
     metaDescription: String,

@@ -14,8 +14,8 @@ async function main() {
     {
       $set: {
         name: 'Standard',
-        duration: 'Monthly',
-        durationValue: 30,
+        duration: 'Month',
+        durationValue: 1,
         price: 30,
         discount: 0,
         totalPrice: 30,
@@ -28,6 +28,8 @@ async function main() {
     },
     { upsert: true }
   );
+
+  console.log('Upserted Standard plan @ ₹30 / 1 Month');
 
   // Disable / remove every other plan
   const result = await db.collection('subscriptionplans').updateMany(

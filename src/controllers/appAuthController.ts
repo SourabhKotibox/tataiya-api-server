@@ -4,15 +4,70 @@ import { UserModel } from '../models/User';
 import { SubscriptionPlanModel } from '../models/SubscriptionPlan';
 import { PlanLimitModel } from '../models/PlanLimit';
 import { LanguageModel } from '../models/Language';
+import { SubscriptionModel } from '../models/Subscription';
 import { MessageCentralService } from '../services/messageCentralService';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import { sendTemplateEmail } from '../lib/email';
 import { SettingsModel } from '../models/Settings';
 import jwt from 'jsonwebtoken';
+import { normalizePlanKey } from './subscriptionController';
 
 const messageCentralService = new MessageCentralService();
 const STATIC_OTP = '1234';
+
+/** Prefer live Subscription rows so admin-created plans show on login immediately */
+async function resolveSubscriptionPayload(user: any) {
+  const userId = user._id;
+  const liveSub = await SubscriptionModel.findOne({
+    userId,
+    status: 'active',
+    $or: [{ endDate: { $gte: new Date() } }, { endDate: null }, { endDate: { $exists: false } }],
+  })
+    .sort({ endDate: -1 })
+    .lean();
+
+  if (liveSub) {
+    const planKey = normalizePlanKey(liveSub.plan);
+    if (
+      user.subscriptionPlan !== planKey ||
+      user.subscriptionStatus !== 'active' ||
+      !user.subscriptionExpiry ||
+      (liveSub.endDate &&
+        new Date(user.subscriptionExpiry).getTime() !== new Date(liveSub.endDate).getTime())
+    ) {
+      await UserModel.findByIdAndUpdate(userId, {
+        $set: {
+          subscriptionPlan: planKey,
+          subscriptionStatus: 'active',
+          subscriptionExpiry: liveSub.endDate || null,
+          subscriptionPlanId: liveSub.planId || null,
+        },
+      });
+    }
+    return {
+      subscriptionPlan: planKey,
+      subscriptionStatus: 'active' as const,
+      subscriptionExpiry: liveSub.endDate || null,
+      subscription: true,
+    };
+  }
+
+  const plan = String(user.subscriptionPlan || 'free').toLowerCase();
+  const status = String(user.subscriptionStatus || 'inactive').toLowerCase();
+  const expiry = user.subscriptionExpiry || null;
+  const active =
+    status === 'active' &&
+    plan !== 'free' &&
+    (!expiry || new Date(expiry) > new Date());
+
+  return {
+    subscriptionPlan: active ? plan : 'free',
+    subscriptionStatus: active ? 'active' : 'inactive',
+    subscriptionExpiry: expiry,
+    subscription: active,
+  };
+}
 
 // Validation schemas
 const sendOtpSchema = z.object({
@@ -401,7 +456,20 @@ export const loginUser = async (request: FastifyRequest, reply: FastifyReply) =>
     await user.save();
     const server = request.server as any;
     const accessToken = server.jwt.sign({ id: user._id.toString(), name: user.name, role: 'user' }, { expiresIn: process.env.MOBILE_JWT_EXPIRES_IN || '7d' });
-    return reply.status(200).send({ success: true, accessToken, userId: user._id.toString(), name: user.name, email: user.email || null, phone: (user as any).phone || null, avatar: user.avatar || null, subscriptionPlan: user.subscriptionPlan || 'free', subscriptionStatus: user.subscriptionStatus || 'inactive', subscriptionExpiry: user.subscriptionExpiry || null, walletBalance: user.walletBalance || 0, profileLimitCount: (user as any).profileLimitCount || 1, expiresIn: 604800 });
+    const sub = await resolveSubscriptionPayload(user);
+    return reply.status(200).send({
+      success: true,
+      accessToken,
+      userId: user._id.toString(),
+      name: user.name,
+      email: user.email || null,
+      phone: (user as any).phone || null,
+      avatar: user.avatar || null,
+      ...sub,
+      walletBalance: user.walletBalance || 0,
+      profileLimitCount: (user as any).profileLimitCount || 1,
+      expiresIn: 604800,
+    });
 
   } catch (error) {
     console.error('Login Error:', error);

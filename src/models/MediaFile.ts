@@ -30,6 +30,14 @@ export interface IMediaFile extends Document {
   hlsStatus?: 'pending' | 'processing' | 'completed' | 'failed';
   hlsError?: string;
   duration?: number; // Video duration in seconds
+  width?: number;
+  height?: number;
+  codec?: string;
+  bitrate?: number;
+  fps?: number;
+  posterFrameUrl?: string; // auto-extracted cover frame
+  transcoder?: 'local' | 'aws';
+  mediaConvertJobId?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -69,6 +77,14 @@ const MediaFileSchema = new Schema<IMediaFile>(
     hlsStatus: { type: String, enum: ['pending', 'processing', 'completed', 'failed'], required: false },
     hlsError: { type: String, required: false },
     duration: { type: Number, required: false }, // in seconds
+    width: { type: Number, required: false },
+    height: { type: Number, required: false },
+    codec: { type: String, required: false },
+    bitrate: { type: Number, required: false },
+    fps: { type: Number, required: false },
+    posterFrameUrl: { type: String, required: false },
+    transcoder: { type: String, enum: ['local', 'aws'], required: false },
+    mediaConvertJobId: { type: String, required: false },
   },
   { timestamps: true }
 );

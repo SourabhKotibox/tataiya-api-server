@@ -43,10 +43,11 @@ const getOptionalUser = async (request: FastifyRequest): Promise<{ userId: strin
 const canAccessItem = (isFree: boolean, isLocked: boolean, contentPlanRequired: string, userPlan: string): boolean => {
   if (isFree) return true;
   if (isLocked) {
-    // If the content is locked, the user must have at least a 'basic' plan (level 1),
-    // or higher if the content itself requires a higher plan
-    const requiredLevel = Math.max(PLAN_LEVELS[contentPlanRequired] ?? 0, 1);
-    return (PLAN_LEVELS[userPlan] ?? 0) >= requiredLevel;
+    const required = String(contentPlanRequired || 'free').toLowerCase();
+    if (!required || required === 'free') return true;
+    // Any active paid plan unlocks paid content (Standard unlocks premium-tagged titles too)
+    const plan = String(userPlan || 'free').toLowerCase();
+    return !!plan && plan !== 'free';
   }
   return true;
 };

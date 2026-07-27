@@ -11,14 +11,21 @@ import {
   downloadFromS3ToFile,
   uploadHlsFolderToS3,
   getHlsPublicBaseUrl,
+  getS3PublicUrl,
 } from './s3';
+import { probeVideo, extractPosterFrame, resolveProbeInput } from './videoProbe';
+import {
+  isMediaConvertEnabled,
+  startMediaConvertHlsJob,
+  waitForMediaConvertJob,
+} from './awsMediaConvert';
+import { getS3Settings } from './s3';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const UPLOADS_ROOT = path.join(__dirname, '../../uploads');
 const TEMP_DIR = path.join(UPLOADS_ROOT, 'temp');
 
-// Ensure temp directory exists
 if (!fs.existsSync(TEMP_DIR)) {
   fs.mkdirSync(TEMP_DIR, { recursive: true });
 }
@@ -26,7 +33,6 @@ if (!fs.existsSync(TEMP_DIR)) {
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 ffmpeg.setFfprobePath(ffprobeInstaller.path);
 
-// Define qualities: 144p to 4K (2160p), we'll adapt to max height of input
 const QUALITY_PRESETS = [
   { quality: '144p', height: 144, bitrate: 200 },
   { quality: '240p', height: 240, bitrate: 400 },
@@ -39,74 +45,167 @@ const QUALITY_PRESETS = [
 ];
 
 export const getVideoInfo = (filePath: string): Promise<{ duration: number; width: number; height: number }> => {
-  return new Promise((resolve, reject) => {
-    ffmpeg.ffprobe(filePath, (err, metadata) => {
-      if (err) {
-        logger.error(err, 'Error getting video info');
-        reject(err);
-        return;
-      }
-      const stream = metadata.streams.find(s => s.codec_type === 'video');
-      if (!stream) {
-        reject(new Error('No video stream found'));
-        return;
-      }
-      resolve({
-        duration: metadata.format.duration || 0,
-        width: stream.width || 0,
-        height: stream.height || 0,
-      });
-    });
-  });
+  return probeVideo(filePath).then((r) => ({
+    duration: r.duration,
+    width: r.width,
+    height: r.height,
+  }));
 };
 
-export const transcodeToHls = async (
-  mediaFileId: string,
-  inputFilePath: string,
-  baseUrl: string,
-  storageType: 'local' | 's3' = 'local'
-): Promise<void> => {
+/**
+ * Probe duration / resolution / codec and extract a poster frame ASAP
+ * (before full HLS finishes) so the movie form can auto-fill.
+ */
+export async function enrichVideoMetadata(mediaFileId: string): Promise<void> {
   const mediaFile = await MediaFileModel.findById(mediaFileId);
-  if (!mediaFile) {
-    throw new Error('Media file not found');
-  }
-
-  let tempDownload: string | null = null;
+  if (!mediaFile) return;
 
   try {
+    const s3Key = (mediaFile as any).s3Key as string | undefined;
+    const input = await resolveProbeInput({
+      localPath: mediaFile.filePath?.startsWith('/uploads/')
+        ? path.join(UPLOADS_ROOT, mediaFile.filePath.replace(/^\/uploads\//, ''))
+        : undefined,
+      s3Key,
+      publicUrl: mediaFile.url,
+    });
+
+    const info = await probeVideo(input);
+    mediaFile.duration = info.duration;
+    (mediaFile as any).width = info.width;
+    (mediaFile as any).height = info.height;
+    (mediaFile as any).codec = info.codec;
+    (mediaFile as any).bitrate = info.bitrate;
+    (mediaFile as any).fps = info.fps;
+
+    if (!(mediaFile as any).posterFrameUrl) {
+      const poster = await extractPosterFrame(input, mediaFileId, info.duration);
+      if (poster) (mediaFile as any).posterFrameUrl = poster;
+    }
+
+    await mediaFile.save();
+    logger.info(
+      { mediaFileId, duration: info.duration, width: info.width, height: info.height },
+      'Video metadata enriched for auto-fill'
+    );
+  } catch (err) {
+    logger.warn({ err, mediaFileId }, 'Video metadata enrich failed');
+  }
+}
+
+async function transcodeWithMediaConvert(mediaFile: any): Promise<void> {
+  const s3Key = mediaFile.s3Key || mediaFile.filePath;
+  if (!s3Key) throw new Error('MediaConvert requires an S3 key');
+
+  mediaFile.transcoder = 'aws';
+  mediaFile.hlsStatus = 'processing';
+  await mediaFile.save();
+
+  const { jobId, outputPrefix } = await startMediaConvertHlsJob({
+    mediaFileId: mediaFile._id.toString(),
+    s3Key: String(s3Key).replace(/^\/+/, ''),
+    sourceHeight: mediaFile.height || 1080,
+  });
+
+  mediaFile.mediaConvertJobId = jobId;
+  await mediaFile.save();
+
+  await waitForMediaConvertJob(jobId);
+
+  const settings = await getS3Settings();
+  const base =
+    settings.cdnUrl ||
+    `https://${settings.bucket}.s3.${settings.region}.amazonaws.com`;
+  // Destination was s3://bucket/hls/{id}/master → master.m3u8
+  const masterUrl = `${base}/${outputPrefix}/master.m3u8`;
+
+  const height = mediaFile.height || 1080;
+  const awsQualities = [
+    { quality: '360p', height: 360, bitrate: 1000 },
+    { quality: '480p', height: 480, bitrate: 1800 },
+    { quality: '720p', height: 720, bitrate: 3500 },
+    { quality: '1080p', height: 1080, bitrate: 6500 },
+  ].filter((q) => q.height <= height);
+
+  const qualities: IHlsQuality[] = (awsQualities.length ? awsQualities : [{ quality: '720p', height: 720, bitrate: 3500 }]).map(
+    (q) => ({
+      quality: q.quality,
+      url: masterUrl,
+      filePath: masterUrl,
+      bitrate: q.bitrate,
+      resolution: `${Math.round((q.height * 16) / 9)}x${q.height}`,
+    })
+  );
+
+  mediaFile.isHls = true;
+  mediaFile.hlsMasterPlaylistUrl = masterUrl;
+  mediaFile.hlsMasterPlaylistPath = masterUrl;
+  mediaFile.hlsQualities = qualities;
+  mediaFile.hlsStatus = 'completed';
+  mediaFile.hlsError = undefined;
+  await mediaFile.save();
+
+  logger.info({ mediaFileId: mediaFile._id, masterUrl, jobId }, 'AWS MediaConvert HLS complete');
+}
+
+async function transcodeLocalFfmpeg(
+  mediaFile: any,
+  inputFilePath: string,
+  storageType: 'local' | 's3'
+): Promise<void> {
+  let tempDownload: string | null = null;
+  try {
+    mediaFile.transcoder = 'local';
     mediaFile.hlsStatus = 'processing';
     await mediaFile.save();
 
     let sourcePath = inputFilePath;
-    const useS3 = storageType === 's3' || (await isS3Configured() && (mediaFile as any).storageType === 's3');
+    const useS3 =
+      storageType === 's3' || ((await isS3Configured()) && mediaFile.storageType === 's3');
 
-    if (useS3 && (mediaFile as any).s3Key) {
-      tempDownload = path.join(TEMP_DIR, `${mediaFile._id}-${Date.now()}${path.extname((mediaFile as any).s3Key) || '.mp4'}`);
-      await downloadFromS3ToFile((mediaFile as any).s3Key, tempDownload);
+    if (useS3 && mediaFile.s3Key) {
+      tempDownload = path.join(
+        TEMP_DIR,
+        `${mediaFile._id}-${Date.now()}${path.extname(mediaFile.s3Key) || '.mp4'}`
+      );
+      await downloadFromS3ToFile(mediaFile.s3Key, tempDownload);
       sourcePath = tempDownload;
     }
 
     if (!sourcePath || !fs.existsSync(sourcePath)) {
-      throw new Error('Source video file not found for HLS transcoding');
+      // Last resort: try public URL via ffmpeg (no local file)
+      if (mediaFile.url && /^https?:\/\//i.test(mediaFile.url)) {
+        sourcePath = mediaFile.url;
+      } else if (mediaFile.s3Key) {
+        sourcePath = await getS3PublicUrl(mediaFile.s3Key);
+      } else {
+        throw new Error('Source video file not found for HLS transcoding');
+      }
     }
 
-    const { duration, width, height } = await getVideoInfo(sourcePath);
-    mediaFile.duration = Math.round(duration);
-
-    const applicablePresets = QUALITY_PRESETS.filter(preset => preset.height <= height);
-    if (applicablePresets.length === 0) {
-      applicablePresets.push(QUALITY_PRESETS[0]);
+    const info = await probeVideo(sourcePath);
+    mediaFile.duration = info.duration;
+    mediaFile.width = info.width;
+    mediaFile.height = info.height;
+    mediaFile.codec = info.codec;
+    mediaFile.bitrate = info.bitrate;
+    mediaFile.fps = info.fps;
+    if (!mediaFile.posterFrameUrl) {
+      const poster = await extractPosterFrame(sourcePath, mediaFile._id.toString(), info.duration);
+      if (poster) mediaFile.posterFrameUrl = poster;
     }
+    await mediaFile.save();
+
+    const applicablePresets = QUALITY_PRESETS.filter((preset) => preset.height <= info.height);
+    if (applicablePresets.length === 0) applicablePresets.push(QUALITY_PRESETS[0]);
 
     const hlsOutputDir = path.join(UPLOADS_ROOT, 'hls', mediaFile._id.toString());
-    if (!fs.existsSync(hlsOutputDir)) {
-      fs.mkdirSync(hlsOutputDir, { recursive: true });
-    }
+    if (!fs.existsSync(hlsOutputDir)) fs.mkdirSync(hlsOutputDir, { recursive: true });
 
     const qualities: IHlsQuality[] = [];
-
     const CONCURRENCY = 2;
-    const runPreset = async (preset: typeof QUALITY_PRESETS[number]) => {
+
+    const runPreset = async (preset: (typeof QUALITY_PRESETS)[number]) => {
       const outputDir = path.join(hlsOutputDir, preset.quality);
       if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
       const playlistPath = path.join(outputDir, 'index.m3u8');
@@ -141,7 +240,7 @@ export const transcodeToHls = async (
         url: `/uploads/hls/${mediaFile._id.toString()}/${preset.quality}/index.m3u8`,
         filePath: `/uploads/hls/${mediaFile._id.toString()}/${preset.quality}/index.m3u8`,
         bitrate: preset.bitrate,
-        resolution: `${Math.round((height ? width * (preset.height / height) : preset.height * 16 / 9))}x${preset.height}`,
+        resolution: `${Math.round(info.width * (preset.height / (info.height || preset.height)))}x${preset.height}`,
       } as IHlsQuality;
     };
 
@@ -152,7 +251,7 @@ export const transcodeToHls = async (
 
     let masterPlaylistContent = '#EXTM3U\n';
     for (const q of qualities) {
-      const preset = applicablePresets.find(p => p.quality === q.quality);
+      const preset = applicablePresets.find((p) => p.quality === q.quality);
       if (preset) {
         masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${preset.bitrate * 1000},RESOLUTION=${q.resolution}\n`;
         masterPlaylistContent += `${q.quality}/index.m3u8\n`;
@@ -173,8 +272,11 @@ export const transcodeToHls = async (
         q.url = `${hlsBase}/${s3Prefix}/${q.quality}/index.m3u8`;
         q.filePath = q.url;
       }
-      // Clean local HLS after upload
-      try { fs.rmSync(hlsOutputDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      try {
+        fs.rmSync(hlsOutputDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
     }
 
     mediaFile.isHls = true;
@@ -183,20 +285,58 @@ export const transcodeToHls = async (
     mediaFile.hlsQualities = qualities;
     mediaFile.hlsStatus = 'completed';
     await mediaFile.save();
+  } finally {
+    if (tempDownload && fs.existsSync(tempDownload)) {
+      try {
+        fs.unlinkSync(tempDownload);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+export const transcodeToHls = async (
+  mediaFileId: string,
+  inputFilePath: string,
+  _baseUrl: string,
+  storageType: 'local' | 's3' = 'local'
+): Promise<void> => {
+  const mediaFile = await MediaFileModel.findById(mediaFileId);
+  if (!mediaFile) throw new Error('Media file not found');
+
+  try {
+    // Fast path: metadata + poster for form auto-fill (don't wait for full HLS)
+    await enrichVideoMetadata(mediaFileId);
+    const refreshed = await MediaFileModel.findById(mediaFileId);
+    if (!refreshed) throw new Error('Media file not found');
+
+    const useAws =
+      isMediaConvertEnabled() &&
+      (await isS3Configured()) &&
+      (!!refreshed.s3Key || refreshed.storageType === 's3');
+
+    if (useAws) {
+      try {
+        await transcodeWithMediaConvert(refreshed);
+        return;
+      } catch (awsErr) {
+        logger.error({ awsErr, mediaFileId }, 'MediaConvert failed — falling back to local ffmpeg');
+      }
+    }
+
+    await transcodeLocalFfmpeg(refreshed, inputFilePath, storageType);
   } catch (error) {
     logger.error({ error }, 'Error transcoding to HLS');
     mediaFile.hlsStatus = 'failed';
     mediaFile.hlsError = error instanceof Error ? error.message : String(error);
     await mediaFile.save();
     throw error;
-  } finally {
-    if (tempDownload && fs.existsSync(tempDownload)) {
-      try { fs.unlinkSync(tempDownload); } catch { /* ignore */ }
-    }
   }
 };
 
 export default {
   getVideoInfo,
   transcodeToHls,
+  enrichVideoMetadata,
 };

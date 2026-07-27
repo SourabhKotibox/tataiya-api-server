@@ -408,7 +408,7 @@ export const uploadFilesToFolder = async (request: FastifyRequest, reply: Fastif
   }
 };
 
-// Get single media file (for HLS status polling)
+// Get single media file (for HLS status polling + movie form auto-fill)
 export const getMediaFileById = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
     const { id } = request.params as { id: string };
@@ -419,12 +419,50 @@ export const getMediaFileById = async (request: FastifyRequest, reply: FastifyRe
     if (!file) {
       return reply.status(404).send({ success: false, error: 'File not found' });
     }
+
+    const rawName = (file.name || '').replace(/\.[^/.]+$/, '');
+    const yearMatch = rawName.match(/(?:^|[.\s_\-(])((?:19|20)\d{2})(?:[.\s_\-)]|$)/);
+    const year = yearMatch ? yearMatch[1] : undefined;
+    let title = rawName
+      .replace(/(?:^|[.\s_-])(?:19|20)\d{2}(?=[.\s_-]|$)/g, ' ')
+      .replace(/\b(1080p|720p|480p|2160p|4k|web-?dl|bluray|x264|x265|hevc|aac|hdtv|webrip)\b/gi, ' ')
+      .replace(/[._]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const secs = file.duration || 0;
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = secs % 60;
+    const durationFormatted = secs
+      ? [h, m, s].map((v) => String(v).padStart(2, '0')).join(':')
+      : undefined;
+
+    const slug = title
+      ? title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+      : undefined;
+
     return reply.send({
       success: true,
       data: {
         ...file,
         id: file._id.toString(),
         _id: file._id,
+        autoFill: {
+          title: title || undefined,
+          year,
+          duration: file.duration,
+          durationFormatted,
+          ageRating: 18,
+          slug,
+          metaTitle: title ? `${title} | Tataiya` : undefined,
+          posterFrameUrl: (file as any).posterFrameUrl,
+          width: (file as any).width,
+          height: (file as any).height,
+          codec: (file as any).codec,
+          bitrate: (file as any).bitrate,
+          transcoder: (file as any).transcoder,
+        },
       },
     });
   } catch (error: any) {

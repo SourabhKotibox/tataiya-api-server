@@ -139,6 +139,17 @@ export const createMovie = async (request: FastifyRequest, reply: FastifyReply) 
   try {
     const body = request.body as any;
 
+    // Reject ephemeral browser blob: URLs (they only work in the tab that created them)
+    const blobFields = ['hlsUrl', 'videoUrl', 'sourceVideoUrl', 'trailerUrl', 'thumbnail', 'posterImage', 'bannerImage'] as const;
+    for (const field of blobFields) {
+      if (typeof body[field] === 'string' && body[field].startsWith('blob:')) {
+        return reply.status(400).send({
+          success: false,
+          error: `Invalid ${field}: browser blob URLs cannot be saved. Wait for upload to finish and select the file from Media Library.`,
+        });
+      }
+    }
+
     // Check if the uploaded video is a raw MP4 or local media file
     const isLocalPath = body.hlsUrl && !body.hlsUrl.startsWith('http://') && !body.hlsUrl.startsWith('https://');
     const isRawLocalVideo = isLocalPath && !body.hlsUrl.endsWith('.m3u8');
@@ -193,6 +204,16 @@ export const updateMovie = async (request: FastifyRequest, reply: FastifyReply) 
   try {
     const { id } = request.params as { id: string };
     const body = request.body as any;
+
+    const blobFields = ['hlsUrl', 'videoUrl', 'sourceVideoUrl', 'trailerUrl', 'thumbnail', 'posterImage', 'bannerImage'] as const;
+    for (const field of blobFields) {
+      if (typeof body[field] === 'string' && body[field].startsWith('blob:')) {
+        return reply.status(400).send({
+          success: false,
+          error: `Invalid ${field}: browser blob URLs cannot be saved. Wait for upload to finish and select the file from Media Library.`,
+        });
+      }
+    }
 
     const existingMovie = await MovieModel.findById(id).lean();
     if (!existingMovie) {
