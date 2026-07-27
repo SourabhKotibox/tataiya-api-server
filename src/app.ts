@@ -4,6 +4,7 @@ import fastifyJwt from '@fastify/jwt';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import fastifyCompress from '@fastify/compress';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import router from './routes';
@@ -11,6 +12,12 @@ import { requestContext } from './lib/context';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Local cache/temp dir — required even when STORAGE_DRIVER=s3 (HLS temp, static plugin)
+const uploadsRoot = path.join(__dirname, '../uploads');
+fs.mkdirSync(uploadsRoot, { recursive: true });
+fs.mkdirSync(path.join(uploadsRoot, 'media'), { recursive: true });
+fs.mkdirSync(path.join(uploadsRoot, 'temp'), { recursive: true });
 
 const fastify = Fastify({
   logger: true,
@@ -87,7 +94,7 @@ fastify.register(fastifyMultipart as any, {
 
 // Register Static file serving
 fastify.register(fastifyStatic, {
-  root: path.join(__dirname, '../uploads'),
+  root: uploadsRoot,
   prefix: '/uploads/',
   setHeaders: (res, filePath) => {
     const lower = String(filePath).toLowerCase();
