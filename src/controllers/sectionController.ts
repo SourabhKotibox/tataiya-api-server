@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
+import { Types } from 'mongoose';
 import { SectionModel } from '../models/Section';
 import { MovieModel } from '../models/Movie';
 
@@ -57,12 +58,30 @@ export const getSectionById = async (request: FastifyRequest, reply: FastifyRepl
 export const createSection = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
     const body = request.body as any;
+
+    // Normalize / sanitize payload from admin UI
+    if (!body.key) body.key = `section-${Date.now()}`;
+    if (!body.category) body.category = body.title || body.key;
+    if (!body.contentType || body.contentType === 'mixed') {
+      // web home builder sends mixed; store as mixed (allowed)
+      body.contentType = body.contentType || 'movie';
+    }
+    if (Array.isArray(body.manualContentIds)) {
+      body.manualContentIds = body.manualContentIds.filter((id: string) =>
+        Types.ObjectId.isValid(id)
+      );
+    }
+
     const section = await SectionModel.create(body);
     await syncManualContent(section);
     reply.status(201).send({ success: true, data: section });
-  } catch (error) {
+  } catch (error: any) {
     request.log.error(error);
-    reply.status(500).send({ success: false, error: 'Failed to create section' });
+    const message =
+      error?.code === 11000
+        ? 'A section with this key already exists'
+        : error?.message || 'Failed to create section';
+    reply.status(500).send({ success: false, error: message });
   }
 };
 

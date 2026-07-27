@@ -4,7 +4,8 @@ export interface ISection extends Document {
   key: string;
   title: string;
   category: string;
-  contentType: 'movie';
+  contentType: 'movie' | 'mixed' | 'web';
+  platform?: 'app' | 'web' | 'all';
   filter?: Record<string, any>;
   sortBy: Record<string, 1 | -1>;
   limit: number;
@@ -27,8 +28,14 @@ const SectionSchema = new Schema<ISection>(
     category: { type: String, required: true },
     contentType: {
       type: String,
-      enum: ['movie'],
+      enum: ['movie', 'mixed', 'web'],
       default: 'movie',
+      index: true,
+    },
+    platform: {
+      type: String,
+      enum: ['app', 'web', 'all'],
+      default: 'all',
       index: true,
     },
     filter: { type: Schema.Types.Mixed, default: {} },
@@ -48,7 +55,7 @@ const SectionSchema = new Schema<ISection>(
       enum: ['dynamic', 'manual', 'mixed'],
       default: 'dynamic'
     },
-    manualContentIds: [{ type: Schema.Types.ObjectId, refPath: 'contentType' }],
+    manualContentIds: [{ type: Schema.Types.ObjectId }],
     showViewAll: { type: Boolean, default: true },
     itemType: { 
       type: String, 
