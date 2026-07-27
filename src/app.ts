@@ -107,7 +107,12 @@ fastify.register(fastifyStatic, {
   },
 });
 
-// Register all routes
+// Register all routes under /api (local + correct nginx proxy_pass without URI strip).
 fastify.register(router, { prefix: '/api' });
+
+// Also register at root so logins work when nginx strips the /api prefix, e.g.
+//   location /api/ { proxy_pass http://127.0.0.1:3000/; }  // strips /api
+// Browser calls /api/auth/login → backend sees /auth/login
+fastify.register(router);
 
 export default fastify;
