@@ -173,13 +173,45 @@ export const deleteFolder = async (request: FastifyRequest, reply: FastifyReply)
   }
 };
 
-// Helper to ensure file path has /uploads/ prefix
+// Helper to ensure local file path has /uploads/ prefix (not for S3 keys)
 const ensureUploadPath = (path: string): string => {
   if (!path) return path;
+  if (path.startsWith('http://') || path.startsWith('https://')) return path;
   if (path.startsWith('/uploads/')) return path;
   if (path.startsWith('uploads/')) return `/${path}`;
   if (path.startsWith('/')) return `/uploads${path}`;
   return `/uploads/${path}`;
+};
+
+/** Keep S3 absolute URLs; only rewrite local files to this host /uploads/... */
+const resolvePublicMediaUrls = (
+  file: { url?: string; filePath?: string; storageType?: string; s3Key?: string },
+  request: FastifyRequest
+) => {
+  const isS3 =
+    file.storageType === 's3' ||
+    !!(file.s3Key) ||
+    (typeof file.url === 'string' &&
+      /^https?:\/\//i.test(file.url) &&
+      !file.url.includes('/uploads/'));
+
+  if (isS3) {
+    const s3Url =
+      (file.url && /^https?:\/\//i.test(file.url) ? file.url : '') ||
+      '';
+    return {
+      url: s3Url || file.url || file.filePath || '',
+      filePath: file.filePath || file.s3Key || file.url || '',
+    };
+  }
+
+  const normalizedPath = ensureUploadPath(file.filePath || '');
+  const protocol = request.protocol;
+  const host = request.headers.host;
+  return {
+    url: `${protocol}://${host}${normalizedPath}`,
+    filePath: normalizedPath,
+  };
 };
 
 // Get files by folder
@@ -197,16 +229,7 @@ export const getFilesByFolder = async (request: FastifyRequest, reply: FastifyRe
 
     const files = await MediaFileModel.find({ folder: id }).sort({ createdAt: -1 }).lean();
     const filesWithSize = files.map((file) => {
-      let fileUrl = file.url;
-      let filePath = file.filePath;
-      
-      {
-        const normalizedPath = ensureUploadPath(file.filePath);
-        const protocol = request.protocol;
-        const host = request.headers.host;
-        fileUrl = `${protocol}://${host}${normalizedPath}`;
-        filePath = normalizedPath;
-      }
+      const { url: fileUrl, filePath } = resolvePublicMediaUrls(file as any, request);
       
       return {
         _id: file._id,
@@ -284,16 +307,7 @@ export const getAllMediaFiles = async (request: FastifyRequest, reply: FastifyRe
     ]);
 
     const filesWithSize = files.map((file) => {
-      let fileUrl = file.url;
-      let filePath = file.filePath;
-      
-      {
-        const normalizedPath = ensureUploadPath(file.filePath);
-        const protocol = request.protocol;
-        const host = request.headers.host;
-        fileUrl = `${protocol}://${host}${normalizedPath}`;
-        filePath = normalizedPath;
-      }
+      const { url: fileUrl, filePath } = resolvePublicMediaUrls(file as any, request);
       
       return {
         _id: file._id,
