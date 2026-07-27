@@ -56,7 +56,11 @@ export async function getS3Client() {
       secretAccessKey: settings.secretAccessKey,
     },
     ...(settings.pathStyle ? { forcePathStyle: true } : {}),
-  });
+    // Required for browser presigned PUTs — SDK v3 otherwise adds CRC32 query params
+    // that XHR/fetch never send → CORS / "S3 network error"
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
+  } as any);
 }
 
 function buildPublicUrl(settings: Awaited<ReturnType<typeof getS3Settings>>, key: string): string {
@@ -93,9 +97,15 @@ export async function generatePresignedUrl(
   const command = new PutObjectCommand({
     Bucket: settings.bucket,
     Key: key,
-    ContentType: contentType,
+    ContentType: contentType || 'application/octet-stream',
   });
-  const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn });
+
+  // Only sign content-type so browser XHR PUT matches the signature
+  const uploadUrl = await getSignedUrl(s3Client, command, {
+    expiresIn,
+    signableHeaders: new Set(['content-type']),
+  });
+
   return {
     uploadUrl,
     publicUrl: buildPublicUrl(settings, key),

@@ -1,0 +1,24 @@
+[
+  {
+    "AllowedHeaders": [
+      "*"
+    ],
+    "AllowedMethods": [
+      "GET",
+      "PUT",
+      "POST",
+      "HEAD"
+    ],
+    "AllowedOrigins": [
+      "https://tataiya.in",
+      "http://localhost:5173",
+      "http://localhost:3000"
+    ],
+    "ExposeHeaders": [
+      "ETag",
+      "x-amz-request-id",
+      "x-amz-id-2"
+    ],
+    "MaxAgeSeconds": 3000
+  }
+]
