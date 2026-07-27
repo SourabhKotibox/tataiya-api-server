@@ -61,6 +61,7 @@ const mapContentItem = (item: any, isHero = false) => {
     type: 'movie',
     contentType: 'movie',
     year: item.year?.toString() || new Date(item.createdAt).getFullYear().toString(),
+    createdAt: item.createdAt ? new Date(item.createdAt).toISOString() : undefined,
     duration: formatDuration(item.duration),
     imdbRating: item.imdbRating?.toString() || (item.rating || '8.0'),
     ageRating: item.ageRating ? `${item.ageRating}+` : 'U/A 13+',
@@ -73,6 +74,9 @@ const mapContentItem = (item: any, isHero = false) => {
     videoUrl: resolveMediaUrl(item.videoUrl || item.hlsUrl || '') || null,
     planRequired: item.planRequired || 'free',
     isPremium: item.planRequired && item.planRequired !== 'free',
+    trending: !!item.trending,
+    isNewContent: !!item.isNewContent,
+    views: item.views || 0,
   };
 };
 
