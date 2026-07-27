@@ -34,15 +34,23 @@ ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 ffmpeg.setFfprobePath(ffprobeInstaller.path);
 
 const QUALITY_PRESETS = [
-  { quality: '144p', height: 144, bitrate: 200 },
-  { quality: '240p', height: 240, bitrate: 400 },
   { quality: '360p', height: 360, bitrate: 800 },
   { quality: '480p', height: 480, bitrate: 1200 },
   { quality: '720p', height: 720, bitrate: 2500 },
-  { quality: '1080p', height: 1080, bitrate: 5000 },
-  { quality: '1440p', height: 1440, bitrate: 8000 },
-  { quality: '2160p', height: 2160, bitrate: 16000 },
+  { quality: '1080p', height: 1080, bitrate: 4500 },
 ];
+
+/** Keep local EC2 transcodes fast — max 3 ladders (prefer mid + high) */
+function pickLocalPresets(sourceHeight: number) {
+  const applicable = QUALITY_PRESETS.filter((p) => p.height <= Math.max(sourceHeight || 720, 360));
+  if (applicable.length <= 3) return applicable.length ? applicable : [QUALITY_PRESETS[0]];
+  // e.g. 1080p source → 480p, 720p, 1080p
+  return [
+    applicable.find((p) => p.quality === '480p') || applicable[Math.floor(applicable.length / 2)],
+    applicable.find((p) => p.quality === '720p') || applicable[applicable.length - 2],
+    applicable[applicable.length - 1],
+  ].filter(Boolean) as typeof QUALITY_PRESETS;
+}
 
 export const getVideoInfo = (filePath: string): Promise<{ duration: number; width: number; height: number }> => {
   return probeVideo(filePath).then((r) => ({
@@ -163,7 +171,16 @@ async function transcodeLocalFfmpeg(
     const useS3 =
       storageType === 's3' || ((await isS3Configured()) && mediaFile.storageType === 's3');
 
-    if (useS3 && mediaFile.s3Key) {
+    // Prefer public HTTPS URL for ffmpeg (no multi‑GB download to EC2 disk)
+    if (useS3) {
+      if (mediaFile.url && /^https?:\/\//i.test(mediaFile.url)) {
+        sourcePath = mediaFile.url;
+      } else if (mediaFile.s3Key) {
+        sourcePath = await getS3PublicUrl(mediaFile.s3Key);
+      }
+    }
+
+    if ((!sourcePath || (sourcePath && !sourcePath.startsWith('http') && !fs.existsSync(sourcePath))) && useS3 && mediaFile.s3Key) {
       tempDownload = path.join(
         TEMP_DIR,
         `${mediaFile._id}-${Date.now()}${path.extname(mediaFile.s3Key) || '.mp4'}`
@@ -172,15 +189,8 @@ async function transcodeLocalFfmpeg(
       sourcePath = tempDownload;
     }
 
-    if (!sourcePath || !fs.existsSync(sourcePath)) {
-      // Last resort: try public URL via ffmpeg (no local file)
-      if (mediaFile.url && /^https?:\/\//i.test(mediaFile.url)) {
-        sourcePath = mediaFile.url;
-      } else if (mediaFile.s3Key) {
-        sourcePath = await getS3PublicUrl(mediaFile.s3Key);
-      } else {
-        throw new Error('Source video file not found for HLS transcoding');
-      }
+    if (!sourcePath || (!sourcePath.startsWith('http') && !fs.existsSync(sourcePath))) {
+      throw new Error('Source video file not found for HLS transcoding');
     }
 
     const info = await probeVideo(sourcePath);
@@ -196,14 +206,13 @@ async function transcodeLocalFfmpeg(
     }
     await mediaFile.save();
 
-    const applicablePresets = QUALITY_PRESETS.filter((preset) => preset.height <= info.height);
-    if (applicablePresets.length === 0) applicablePresets.push(QUALITY_PRESETS[0]);
+    const applicablePresets = pickLocalPresets(info.height);
 
     const hlsOutputDir = path.join(UPLOADS_ROOT, 'hls', mediaFile._id.toString());
     if (!fs.existsSync(hlsOutputDir)) fs.mkdirSync(hlsOutputDir, { recursive: true });
 
     const qualities: IHlsQuality[] = [];
-    const CONCURRENCY = 2;
+    const CONCURRENCY = 1; // one quality at a time — more stable on small EC2
 
     const runPreset = async (preset: (typeof QUALITY_PRESETS)[number]) => {
       const outputDir = path.join(hlsOutputDir, preset.quality);
@@ -214,11 +223,12 @@ async function transcodeLocalFfmpeg(
       await new Promise((resolve, reject) => {
         ffmpeg(sourcePath)
           .outputOptions([
-            '-preset', 'veryfast',
+            '-preset', 'ultrafast',
+            '-threads', '0',
             '-g', '48',
             '-sc_threshold', '0',
             '-keyint_min', '48',
-            '-hls_time', '4',
+            '-hls_time', '6',
             '-hls_list_size', '0',
             '-hls_segment_filename', segmentPattern,
             '-vf', `scale=-2:${preset.height}`,
@@ -226,7 +236,7 @@ async function transcodeLocalFfmpeg(
             '-maxrate', `${preset.bitrate * 1.5}k`,
             '-bufsize', `${preset.bitrate * 2}k`,
             '-c:a', 'aac',
-            '-b:a', '128k',
+            '-b:a', '96k',
             '-ac', '2',
           ])
           .output(playlistPath)

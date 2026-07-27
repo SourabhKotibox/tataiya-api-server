@@ -661,12 +661,15 @@ export const confirmS3MediaUpload = async (request: FastifyRequest, reply: Fasti
     const mediaFile = await MediaFileModel.create(createPayload);
 
     if (isVideo) {
-      const { transcodeToHls } = await import('../services/videoProcessor');
+      const { transcodeToHls } = await import('../lib/hlsTranscoder');
       const protocol = request.protocol;
       const host = request.headers.host;
       const baseUrl = `${protocol}://${host}`;
-      transcodeToHls(mediaFile._id.toString(), '', baseUrl, 's3').catch((err) => {
-        logger.error({ err, mediaFileId: mediaFile._id }, 'Failed to transcode video to HLS after direct S3 upload');
+      // Fire-and-forget — never block the upload response on HLS
+      setImmediate(() => {
+        transcodeToHls(mediaFile._id.toString(), '', baseUrl, 's3').catch((err) => {
+          logger.error({ err, mediaFileId: mediaFile._id }, 'Failed to transcode video to HLS after direct S3 upload');
+        });
       });
     }
 
