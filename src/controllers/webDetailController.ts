@@ -134,6 +134,7 @@ export const getWebDetail = async (request: FastifyRequest, reply: FastifyReply)
       tags: item.tags || [],
       isLocked: item.planRequired !== 'free',
       planRequired: item.planRequired || 'free',
+      downloadAllowed: item.downloadAllowed !== false,
       episodeMeta: `HD • ${genreNames.join(', ')} • ${durationFormatted || 'N/A'}`,
       isExclusive: item.isExclusive || false,
       featured: item.featured || false,
