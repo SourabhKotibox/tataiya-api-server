@@ -36,7 +36,7 @@ export interface IMediaFile extends Document {
   bitrate?: number;
   fps?: number;
   posterFrameUrl?: string; // auto-extracted cover frame
-  transcoder?: 'local' | 'aws';
+  transcoder?: 'local' | 'aws' | 'progressive';
   mediaConvertJobId?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -83,7 +83,7 @@ const MediaFileSchema = new Schema<IMediaFile>(
     bitrate: { type: Number, required: false },
     fps: { type: Number, required: false },
     posterFrameUrl: { type: String, required: false },
-    transcoder: { type: String, enum: ['local', 'aws'], required: false },
+    transcoder: { type: String, enum: ['local', 'aws', 'progressive'], required: false },
     mediaConvertJobId: { type: String, required: false },
   },
   { timestamps: true }
