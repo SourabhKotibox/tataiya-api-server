@@ -30,19 +30,31 @@ const toAbsoluteUrl = (
 };
 
 const pickDownloadUrl = (movie: any, request: FastifyRequest): string => {
+  const usable = (u?: string | null) => {
+    const s = String(u || '').trim();
+    if (!s || s.startsWith('blob:')) return '';
+    return s;
+  };
   const candidates: string[] = [];
-  if (movie.videoUrl && !String(movie.videoUrl).includes('.m3u8')) candidates.push(movie.videoUrl);
+  const source = usable(movie.sourceVideoUrl);
+  const video = usable(movie.videoUrl);
+  const hls = usable(movie.hlsUrl);
+  if (source && !source.includes('.m3u8')) candidates.push(source);
+  if (video && !video.includes('.m3u8')) candidates.push(video);
   for (const q of movie.videoQualities || []) {
-    if (q?.url && !String(q.url).includes('.m3u8')) candidates.push(q.url);
+    const qu = usable(q?.url);
+    if (qu && !qu.includes('.m3u8')) candidates.push(qu);
   }
-  if (movie.hlsUrl) candidates.push(movie.hlsUrl);
-  if (movie.videoUrl) candidates.push(movie.videoUrl);
+  if (hls && !hls.includes('.m3u8')) candidates.push(hls);
+  if (hls) candidates.push(hls);
+  if (video) candidates.push(video);
   for (const q of movie.videoQualities || []) {
-    if (q?.url) candidates.push(q.url);
+    const qu = usable(q?.url);
+    if (qu) candidates.push(qu);
   }
   for (const c of candidates) {
     const abs = toAbsoluteUrl(request, c);
-    if (abs) return abs;
+    if (abs && !abs.startsWith('blob:')) return abs;
   }
   return '';
 };
