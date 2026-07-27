@@ -91,10 +91,14 @@ export const getWebDetail = async (request: FastifyRequest, reply: FastifyReply)
       contentType: 'movie',
       playerType: 'standard',
       year: item.year?.toString() || new Date(item.createdAt).getFullYear().toString(),
-      duration: item.duration ? `${item.duration}m` : '120m',
+      duration: durationFormatted || 'N/A',
       durationFormatted,
       imdbRating: item.imdbRating?.toString() || (item.rating || '8.0'),
-      ageRating: item.ageRating ? `${item.ageRating}+` : 'U/A 13+',
+      ageRating: item.ageRating
+        ? (String(item.ageRating).includes('+') || String(item.ageRating).toUpperCase().includes('U')
+            ? String(item.ageRating)
+            : `${item.ageRating}+`)
+        : '18+',
       description: item.description || item.shortDescription || '',
       shortDescription: item.shortDescription || null,
       language: languageNames.length > 0 ? languageNames.join(', ') : 'EN',
@@ -140,16 +144,22 @@ export const getWebDetail = async (request: FastifyRequest, reply: FastifyReply)
         .select('title thumbnail posterImage bannerImage year rating ageRating duration imdbRating isNewContent featured trending views createdAt')
         .lean();
 
-      related = relatedRaw.map((r: any) => ({
-        id: r._id.toString(),
-        title: r.title,
-        poster: r.posterImage || r.thumbnail || '',
-        type: 'movie',
-        year: r.year?.toString() || new Date(r.createdAt).getFullYear().toString(),
-        duration: r.duration ? `${r.duration}m` : '120m',
-        imdbRating: r.imdbRating?.toString() || (r.rating || '8.0'),
-        ageRating: r.ageRating ? `${r.ageRating}+` : 'U/A 13+',
-      }));
+      related = relatedRaw.map((r: any) => {
+        const h = r.duration ? Math.floor(r.duration / 3600) : 0;
+        const m = r.duration ? Math.floor((r.duration % 3600) / 60) : 0;
+        const dur = r.duration ? (h > 0 ? `${h}h ${m}m` : `${m}m`) : null;
+        return {
+          id: r._id.toString(),
+          title: r.title,
+          poster: r.posterImage || r.thumbnail || '',
+          backdrop: r.bannerImage || r.posterImage || r.thumbnail || '',
+          type: 'movie',
+          year: r.year?.toString() || new Date(r.createdAt).getFullYear().toString(),
+          duration: dur || 'N/A',
+          imdbRating: r.imdbRating?.toString() || (r.rating || '8.0'),
+          ageRating: r.ageRating ? `${r.ageRating}+` : '18+',
+        };
+      });
     }
 
     return reply.send({
