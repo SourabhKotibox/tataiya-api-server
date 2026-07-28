@@ -93,16 +93,32 @@ export const getReviewsApp = async (request: FastifyRequest, reply: FastifyReply
       ReviewModel.countDocuments(filter),
     ]);
 
-    // Calculate average rating
-    const agg = await ReviewModel.aggregate([
-      { $match: { status: 'published' } },
-      { $group: { _id: null, averageRating: { $avg: '$rating' }, totalReviews: { $sum: 1 } } }
+    // Calculate average rating + star distribution
+    const [agg, distAgg] = await Promise.all([
+      ReviewModel.aggregate([
+        { $match: { status: 'published' } },
+        { $group: { _id: null, averageRating: { $avg: '$rating' }, totalReviews: { $sum: 1 } } },
+      ]),
+      ReviewModel.aggregate([
+        { $match: { status: 'published' } },
+        { $group: { _id: '$rating', count: { $sum: 1 } } },
+      ]),
     ]);
+
+    const distribution: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    for (const row of distAgg) {
+      const star = Number(row._id);
+      if (star >= 1 && star <= 5) distribution[star] = row.count;
+    }
 
     return reply.send({
       success: true,
       data: reviews,
-      stats: agg[0] || { averageRating: 0, totalReviews: 0 },
+      stats: {
+        averageRating: agg[0]?.averageRating || 0,
+        totalReviews: agg[0]?.totalReviews || 0,
+        distribution,
+      },
       pagination: {
         total,
         page,
