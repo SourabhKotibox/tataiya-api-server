@@ -17,8 +17,11 @@ const appProfileRoutes: FastifyPluginAsync = async (fastify) => {
   // PUT /api/app/profile/language
   fastify.put('/profile/language', updatePreferredLanguage);
 
-  // DELETE /api/app/profile
+  // DELETE /api/app/profile — legacy alias (mobile Postman collection)
   fastify.delete('/profile', deleteAppAccount);
+
+  // DELETE /api/app/account — preferred delete-account endpoint (app + web)
+  fastify.delete('/account', deleteAppAccount);
 
   // GET /api/app/devices
   fastify.get('/devices', getDevices);

@@ -36,6 +36,7 @@ import webDownloadRoutes from './webDownload';
 import watchProgressRoutes from './watchProgress';
 import appNotificationRoutes from './appNotificationRoutes';
 
+import { deleteAppAccount } from '../controllers/appProfileController';
 import { getHomePage } from '../controllers/appHomeController';
 import { getAppBanners } from '../controllers/appHomeController';
 import { getExplore } from '../controllers/exploreController';
@@ -102,6 +103,9 @@ const router: FastifyPluginAsync = async (fastify) => {
 
   // Web download routes — separate from app, no subscription gate
   fastify.register(webDownloadRoutes, { prefix: '/web' });
+
+  // DELETE /api/web/account — same handler as app (website end-users)
+  fastify.delete('/web/account', deleteAppAccount);
 
   // Watch progress routes (POST /watch/progress, DELETE /watch/progress/:contentId)
   fastify.register(watchProgressRoutes, { prefix: '/app' });

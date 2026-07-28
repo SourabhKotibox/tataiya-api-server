@@ -14,6 +14,8 @@ import { MovieModel } from '../models/Movie';
 import { UserWatchProgressModel } from '../models/UserWatchProgress';
 import { ReviewModel } from '../models/Review';
 import { SubscriptionModel } from '../models/Subscription';
+import { UserViewModel } from '../models/UserView';
+import { TransactionModel } from '../models/Transaction';
 import { logger } from '../lib/logger';
 import uploadHandler from '../lib/uploadHandler';
 
@@ -417,6 +419,7 @@ export const getAppProfile = async (request: FastifyRequest, reply: FastifyReply
       termsOfService: termsPage?.content || '',
       deleteAccountTitle: 'Delete Account',
       deleteAccountDescription: 'Permanently delete your account and all associated data.',
+      deleteAccountEndpoint: 'DELETE /api/app/account',
       appVersion: 'V1.2.4',
     };
 
@@ -527,11 +530,17 @@ export const updatePreferredLanguage = async (request: FastifyRequest, reply: Fa
   }
 };
 
-// ── DELETE App Account ──────────────────────────────────────────────────────
+// ── DELETE App/Web Account ──────────────────────────────────────────────────
+// Used by mobile app and website (same User model + Bearer appAccessToken).
+// Routes: DELETE /api/app/profile | /api/app/account | /api/web/account
 export const deleteAppAccount = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
     const userId = getOptionalUserId(request);
     if (!userId) {
+      return reply.status(401).send({ success: false, message: 'Unauthorized' });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
       return reply.status(401).send({ success: false, message: 'Unauthorized' });
     }
 
@@ -549,8 +558,10 @@ export const deleteAppAccount = async (request: FastifyRequest, reply: FastifyRe
       UserDownloadModel.deleteMany({ userId: userObjectId }),
       UserWishlistModel.deleteMany({ userId: userObjectId }),
       UserLikeModel.deleteMany({ userId: userObjectId }),
+      UserViewModel.deleteMany({ userId: userObjectId }),
       ReviewModel.deleteMany({ userId: userObjectId }),
       SubscriptionModel.deleteMany({ userId: userObjectId }),
+      TransactionModel.deleteMany({ userId: userObjectId }),
     ]);
 
     return reply.send({
