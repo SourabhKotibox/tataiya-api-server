@@ -73,6 +73,8 @@ export interface ISettings extends Document {
   socialLogin: boolean;
   twoFactorAuth: boolean;
   emailVerification: boolean;
+  /** When false, hide website review section for all public users */
+  showReviews: boolean;
   // VIP Settings
   vipTitle: string;
   vipHighlight: string;
@@ -207,6 +209,7 @@ const SettingsSchema = new Schema<ISettings>(
     socialLogin: { type: Boolean, default: true },
     twoFactorAuth: { type: Boolean, default: false },
     emailVerification: { type: Boolean, default: true },
+    showReviews: { type: Boolean, default: true },
     // VIP Settings
     vipTitle: { type: String, default: 'Unlock the' },
     vipHighlight: { type: String, default: 'Ultimate Experience' },
