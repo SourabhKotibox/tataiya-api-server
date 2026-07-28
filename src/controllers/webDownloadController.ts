@@ -28,35 +28,67 @@ const toAbsoluteUrl = (
   return `${proto}://${host}${relPath}`;
 };
 
+/** Normalize URL for equality checks (ignore query/hash, trailing slash). */
+const normalizeMediaUrl = (u: string): string =>
+  String(u || '')
+    .trim()
+    .replace(/[?#].*$/, '')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+
+const looksLikeTrailerUrl = (u: string, trailerUrl?: string | null): boolean => {
+  const n = normalizeMediaUrl(u);
+  if (!n) return false;
+  const trailer = normalizeMediaUrl(trailerUrl || '');
+  if (trailer && (n === trailer || n.endsWith(trailer.split('/').pop() || '___') || trailer.endsWith(n.split('/').pop() || '___'))) {
+    return true;
+  }
+  // Common filename patterns for trailers
+  if (/(\/|^)(trailer|teaser|preview)s?([\/._-]|$)/i.test(n)) return true;
+  if (/[._-](trailer|teaser|preview)(\.|$)/i.test(n)) return true;
+  return false;
+};
+
+/**
+ * Pick a progressive FULL-MOVIE URL for offline download.
+ * Never returns the trailer — that was causing "download offline = trailer only".
+ */
 const pickDownloadUrl = (movie: any, request: FastifyRequest): string => {
   const usable = (u?: string | null) => {
     const s = String(u || '').trim();
     if (!s || s.startsWith('blob:')) return '';
     return s;
   };
+
+  const trailer = usable(movie.trailerUrl);
   const candidates: string[] = [];
-  // Prefer progressive MP4 / non-HLS sources for offline caching
+  const push = (u: string) => {
+    if (!u) return;
+    if (looksLikeTrailerUrl(u, trailer)) return;
+    if (candidates.includes(u)) return;
+    candidates.push(u);
+  };
+
   const source = usable(movie.sourceVideoUrl);
   const video = usable(movie.videoUrl);
   const hls = usable(movie.hlsUrl);
-  if (source && !source.includes('.m3u8')) candidates.push(source);
-  if (video && !video.includes('.m3u8')) candidates.push(video);
+
+  // Prefer progressive MP4 / non-HLS full-movie sources
+  if (source && !source.includes('.m3u8')) push(source);
+  if (video && !video.includes('.m3u8')) push(video);
   for (const q of movie.videoQualities || []) {
     const qu = usable(q?.url);
-    if (qu && !qu.includes('.m3u8')) candidates.push(qu);
+    if (qu && !qu.includes('.m3u8')) push(qu);
   }
-  // Progressive "HLS" (source MP4 marked as master) is still fine for offline
-  if (hls && !hls.includes('.m3u8')) candidates.push(hls);
-  if (hls) candidates.push(hls);
-  if (video) candidates.push(video);
-  for (const q of movie.videoQualities || []) {
-    const qu = usable(q?.url);
-    if (qu) candidates.push(qu);
-  }
+  // Some pipelines store the source MP4 in hlsUrl before transcoding finishes
+  if (hls && !hls.includes('.m3u8')) push(hls);
+
   for (const c of candidates) {
     const abs = toAbsoluteUrl(request, c);
-    if (abs && !abs.startsWith('blob:')) return abs;
+    if (abs && !abs.startsWith('blob:') && !looksLikeTrailerUrl(abs, trailer)) return abs;
   }
+
+  // Do NOT fall back to trailerUrl or HLS playlists — offline cache needs a single progressive file
   return '';
 };
 
@@ -151,7 +183,13 @@ export const webRequestDownload = async (request: FastifyRequest, reply: Fastify
     const downloadUrl = pickDownloadUrl(movie, request);
 
     if (!downloadUrl) {
-      return reply.status(404).send({ success: false, message: 'No video URL available for this content' });
+      const hasHls = !!(movie as any).hlsUrl && String((movie as any).hlsUrl).includes('.m3u8');
+      return reply.status(404).send({
+        success: false,
+        message: hasHls
+          ? 'This movie is streaming-only (HLS). A progressive MP4 is required for offline download — re-upload the full movie file in Media Library.'
+          : 'No full movie file available for offline download. Trailer cannot be used — attach the full movie video.',
+      });
     }
 
     const qualities = ((movie as any).videoQualities || []).map((q: any) => ({

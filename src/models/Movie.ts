@@ -11,6 +11,7 @@ export interface IMovie extends Document {
   bannerImage?: string;
   posterImage?: string;
   trailerUrl?: string;
+  sourceVideoUrl?: string;
   genres: mongoose.Types.ObjectId[];
   categories: mongoose.Types.ObjectId[];
   sections: string[];
@@ -81,6 +82,7 @@ const MovieSchema = new Schema<IMovie>(
     bannerImage: String,
     posterImage: String,
     trailerUrl: String,
+    sourceVideoUrl: String,
     genres: [{ type: Schema.Types.ObjectId, ref: 'Genre' }],
     categories: [{ type: Schema.Types.ObjectId, ref: 'Category' }],
     sections: { type: [String], default: [] },

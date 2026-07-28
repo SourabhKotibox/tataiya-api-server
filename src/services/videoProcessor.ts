@@ -362,6 +362,7 @@ export const processMovieHls = async (movieId: Types.ObjectId | string, sourceVi
     await MovieModel.findByIdAndUpdate(movieId, {
       hlsUrl:          result.hlsUrl,
       videoUrl:        sourceVideoUrl,
+      sourceVideoUrl,
       videoQualities:  result.videoQualities,
       status:          'published',
       processingStatus:'ready',

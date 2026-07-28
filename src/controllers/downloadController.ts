@@ -29,32 +29,57 @@ const toAbsoluteUrl = (
   return `${proto}://${host}${relPath}`;
 };
 
+const normalizeMediaUrl = (u: string): string =>
+  String(u || '')
+    .trim()
+    .replace(/[?#].*$/, '')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+
+const looksLikeTrailerUrl = (u: string, trailerUrl?: string | null): boolean => {
+  const n = normalizeMediaUrl(u);
+  if (!n) return false;
+  const trailer = normalizeMediaUrl(trailerUrl || '');
+  if (trailer) {
+    const tLeaf = trailer.split('/').pop() || '';
+    const nLeaf = n.split('/').pop() || '';
+    if (n === trailer || (tLeaf && nLeaf && tLeaf === nLeaf)) return true;
+  }
+  if (/(\/|^)(trailer|teaser|preview)s?([\/._-]|$)/i.test(n)) return true;
+  if (/[._-](trailer|teaser|preview)(\.|$)/i.test(n)) return true;
+  return false;
+};
+
+/** Progressive full-movie URL only — never the trailer. */
 const pickDownloadUrl = (movie: any, request: FastifyRequest): string => {
   const usable = (u?: string | null) => {
     const s = String(u || '').trim();
     if (!s || s.startsWith('blob:')) return '';
     return s;
   };
+
+  const trailer = usable(movie.trailerUrl);
   const candidates: string[] = [];
+  const push = (u: string) => {
+    if (!u || looksLikeTrailerUrl(u, trailer) || candidates.includes(u)) return;
+    candidates.push(u);
+  };
+
   const source = usable(movie.sourceVideoUrl);
   const video = usable(movie.videoUrl);
   const hls = usable(movie.hlsUrl);
-  if (source && !source.includes('.m3u8')) candidates.push(source);
-  if (video && !video.includes('.m3u8')) candidates.push(video);
+
+  if (source && !source.includes('.m3u8')) push(source);
+  if (video && !video.includes('.m3u8')) push(video);
   for (const q of movie.videoQualities || []) {
     const qu = usable(q?.url);
-    if (qu && !qu.includes('.m3u8')) candidates.push(qu);
+    if (qu && !qu.includes('.m3u8')) push(qu);
   }
-  if (hls && !hls.includes('.m3u8')) candidates.push(hls);
-  if (hls) candidates.push(hls);
-  if (video) candidates.push(video);
-  for (const q of movie.videoQualities || []) {
-    const qu = usable(q?.url);
-    if (qu) candidates.push(qu);
-  }
+  if (hls && !hls.includes('.m3u8')) push(hls);
+
   for (const c of candidates) {
     const abs = toAbsoluteUrl(request, c);
-    if (abs && !abs.startsWith('blob:')) return abs;
+    if (abs && !abs.startsWith('blob:') && !looksLikeTrailerUrl(abs, trailer)) return abs;
   }
   return '';
 };
@@ -146,7 +171,13 @@ export const requestDownload = async (request: FastifyRequest, reply: FastifyRep
     const duration = movie.duration || 0;
     const downloadUrl = pickDownloadUrl(movie, request);
     if (!downloadUrl) {
-      return reply.status(404).send({ success: false, message: 'No video URL available for this content' });
+      const hasHls = !!(movie as any).hlsUrl && String((movie as any).hlsUrl).includes('.m3u8');
+      return reply.status(404).send({
+        success: false,
+        message: hasHls
+          ? 'This movie is streaming-only (HLS). A progressive MP4 is required for offline download — re-upload the full movie file.'
+          : 'No full movie file available for offline download. Trailer cannot be used — attach the full movie video.',
+      });
     }
     const qualities = (movie.videoQualities || []).map((q: any) => ({
       quality: q.quality,

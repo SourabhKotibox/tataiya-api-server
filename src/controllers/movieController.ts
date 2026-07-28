@@ -159,6 +159,17 @@ export const createMovie = async (request: FastifyRequest, reply: FastifyReply) 
       body.processingStatus = 'ready';
     }
 
+    // Keep full-movie progressive source separate from trailer (offline downloads use this)
+    const mainVideo = typeof body.hlsUrl === 'string' ? body.hlsUrl.trim() : '';
+    const trailer = typeof body.trailerUrl === 'string' ? body.trailerUrl.trim() : '';
+    if (mainVideo && !mainVideo.startsWith('blob:') && mainVideo !== trailer && !mainVideo.includes('.m3u8')) {
+      body.sourceVideoUrl = mainVideo;
+      body.videoUrl = mainVideo;
+    }
+    // Never allow videoUrl/sourceVideoUrl to silently equal trailer
+    if (trailer && body.videoUrl === trailer) delete body.videoUrl;
+    if (trailer && body.sourceVideoUrl === trailer) delete body.sourceVideoUrl;
+
     const movie = await MovieModel.create(body);
     await syncSections(movie._id.toString(), body.sections);
 
@@ -228,6 +239,16 @@ export const updateMovie = async (request: FastifyRequest, reply: FastifyReply) 
     } else if (body.hlsUrl) {
       body.processingStatus = 'ready';
     }
+
+    // Keep full-movie progressive source separate from trailer
+    const mainVideo = typeof body.hlsUrl === 'string' ? body.hlsUrl.trim() : '';
+    const trailer = typeof body.trailerUrl === 'string' ? body.trailerUrl.trim() : String((existingMovie as any).trailerUrl || '');
+    if (mainVideo && !mainVideo.startsWith('blob:') && mainVideo !== trailer && !mainVideo.includes('.m3u8')) {
+      body.sourceVideoUrl = mainVideo;
+      body.videoUrl = mainVideo;
+    }
+    if (trailer && body.videoUrl === trailer) delete body.videoUrl;
+    if (trailer && body.sourceVideoUrl === trailer) delete body.sourceVideoUrl;
 
     const movie = await MovieModel.findByIdAndUpdate(
       id,
