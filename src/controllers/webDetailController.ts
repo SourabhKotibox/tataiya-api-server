@@ -29,12 +29,16 @@ export const getWebDetail = async (request: FastifyRequest, reply: FastifyReply)
     const genreNames = (item.genres || []).map((g: any) => g?.name || g);
     const languageNames = (item.languages || []).map((l: any) => l?.name || l);
 
-    // Video settings — never use blob: browser preview URLs
+    // Prefer real HLS master playlist (.m3u8) over progressive MP4 when both exist
+    const candidates = [item.hlsUrl, item.videoUrl, item.sourceVideoUrl].filter(
+      (u: any) => typeof u === 'string' && u.trim() && !u.startsWith('blob:')
+    ) as string[];
     const hlsUrl =
-      [item.hlsUrl, item.videoUrl, item.sourceVideoUrl].find(
-        (u: any) => typeof u === 'string' && u.trim() && !u.startsWith('blob:')
-      ) || '';
+      candidates.find((u) => /\.m3u8(\?|#|$)/i.test(u)) ||
+      candidates[0] ||
+      '';
     const qualities: any[] = item.videoQualities || [];
+    const isHlsReady = /\.m3u8(\?|#|$)/i.test(hlsUrl) || qualities.length > 0;
     const videoSettings = hlsUrl
       ? [
           { key: 'auto', label: 'Auto', description: 'Adjusts quality automatically', url: hlsUrl },
@@ -111,6 +115,8 @@ export const getWebDetail = async (request: FastifyRequest, reply: FastifyReply)
       trailerUrl: item.trailerUrl && !String(item.trailerUrl).startsWith('blob:') ? item.trailerUrl : null,
       videoUrl: hlsUrl || null,
       hlsUrl: hlsUrl || null,
+      isHlsReady,
+      processingStatus: item.processingStatus || (isHlsReady ? 'ready' : 'queued'),
       sourceVideoUrl:
         item.sourceVideoUrl && !String(item.sourceVideoUrl).startsWith('blob:')
           ? item.sourceVideoUrl

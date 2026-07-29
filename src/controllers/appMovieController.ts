@@ -158,8 +158,16 @@ export const getMovieDetail = async (request: FastifyRequest, reply: FastifyRepl
       : null;
 
     // ── 6. Video settings (quality options) ──────────────────────────────────
-    const hlsUrl = movie.hlsUrl || movie.videoUrl || null;
+    // Prefer HLS master playlist for app playback
+    const candidates = [movie.hlsUrl, movie.videoUrl, movie.sourceVideoUrl].filter(
+      (u: any) => typeof u === 'string' && u.trim() && !String(u).startsWith('blob:')
+    ) as string[];
+    const hlsUrl =
+      candidates.find((u) => /\.m3u8(\?|#|$)/i.test(u)) ||
+      candidates[0] ||
+      null;
     const qualities: any[] = movie.videoQualities || [];
+    const isHlsReady = !!(hlsUrl && /\.m3u8(\?|#|$)/i.test(hlsUrl)) || qualities.length > 0;
 
     // Sort qualities in the correct playback order (144p → 4K)
     const QUALITY_ORDER = ['144p', '240p', '360p', '480p', '720p', '1080p', '1440p', '2160p'];
@@ -224,6 +232,8 @@ export const getMovieDetail = async (request: FastifyRequest, reply: FastifyRepl
 
         // Video
         hlsUrl: toAbsoluteUrl(request, hlsUrl),
+        isHlsReady,
+        processingStatus: (movie as any).processingStatus || (isHlsReady ? 'ready' : 'queued'),
         videoSettings,
         playbackSpeeds: [
           { value: 0.75, label: '0.75x' },
