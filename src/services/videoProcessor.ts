@@ -20,6 +20,11 @@ export const HLS_QUALITY_LADDER = [
   { name: '2160p', width: 3840, height: 2160, bitrate: '16000k',maxrate: '17120k', bufsize: '24000k', audioBitrate: '192k' },
 ] as const;
 
+/** Low-RAM servers: encode these only, one at a time (avoids OOM from 6-stream single-pass) */
+const HLS_QUALITY_LADDER_SAFE = HLS_QUALITY_LADDER.filter((q) =>
+  ['360p', '480p', '720p', '1080p'].includes(q.name)
+);
+
 export type QualityName = typeof HLS_QUALITY_LADDER[number]['name'];
 
 // Bandwidth values for master.m3u8 BANDWIDTH attribute (bits/s)
@@ -167,82 +172,28 @@ export const transcodeHlsMultiResolution = async (options: {
 
   // ── Detect source resolution & filter quality ladder ───────────────────
   const sourceRes = await probeResolution(ffmpegInput);
-  const sourceHeight = sourceRes?.height ?? 2160; // assume max if detection fails
-  const qualities = filterQualitiesByResolution(sourceHeight, HLS_QUALITY_LADDER);
-  logger.info({ id, sourceHeight, qualityCount: qualities.length }, 'Starting HLS transcoding');
-
-  // ── Build single-pass FFmpeg args ───────────────────────────────────────
-  const args: string[] = ['-y'];
-
-  // Input seek (must come before -i for fast seek)
-  if (startSeconds !== undefined && startSeconds > 0) {
-    args.push('-ss', String(startSeconds));
-  }
-  args.push('-i', ffmpegInput);
-  if (duration !== undefined && duration > 0) {
-    args.push('-t', String(duration));
-  }
-
-  // Build filter_complex: split video and scale each output stream
-  const n = qualities.length;
-  const splitOutputs = qualities.map((_, i) => `[temp${i}]`).join('');
-  const scaleFilters = qualities.map((q, i) => `[temp${i}]scale=${q.width}:${q.height}[v${i}]`).join(';');
-  const filterComplexString = `[0:v]split=${n}${splitOutputs};${scaleFilters}`;
-  args.push('-filter_complex', filterComplexString);
-
-  // Map each video stream, then audio
-  qualities.forEach((q, i) => {
-    args.push(
-      `-map`, `[v${i}]`,
-      `-c:v:${i}`, 'libx264',
-      `-b:v:${i}`, q.bitrate,
-      `-maxrate:v:${i}`, q.maxrate,
-      `-bufsize:v:${i}`, q.bufsize,
-      `-preset:v:${i}`, 'veryfast',
-      `-profile:v:${i}`, 'main',
-      `-map`, '0:a:0',
-      `-c:a:${i}`, 'aac',
-      `-b:a:${i}`, q.audioBitrate,
-      `-ar:a:${i}`, '48000',
-    );
-  });
-
-  // var_stream_map — pairs each video track with audio track
-  const streamMap = qualities.map((_, i) => `v:${i},a:${i},name:${qualities[i].name}`).join(' ');
-  args.push(
-    '-var_stream_map', streamMap,
-    '-master_pl_name', 'master.m3u8',
-    '-f', 'hls',
-    '-hls_time', '6',
-    '-hls_playlist_type', 'vod',
-    '-hls_flags', 'independent_segments',
-    '-hls_segment_filename', path.join(hlsFolder, '%v/segment_%03d.ts'),
-    path.join(hlsFolder, '%v/playlist.m3u8'),
+  const sourceHeight = sourceRes?.height ?? 1080;
+  // Always use the safe ladder (360–1080) and sequential encode — EC2 OOM-killed
+  // the 6-stream single-pass (ffmpeg + node ~2GB+). One quality at a time is stable.
+  const qualities = filterQualitiesByResolution(sourceHeight, HLS_QUALITY_LADDER_SAFE);
+  logger.info(
+    { id, sourceHeight, qualityCount: qualities.length, mode: 'sequential-safe' },
+    'Starting HLS transcoding'
   );
 
-  // ── Run FFmpeg ──────────────────────────────────────────────────────────
-  try {
-    await runCommand('ffmpeg', args);
-  } catch (err: any) {
-    logger.error({ err, id }, 'FFmpeg single-pass failed — falling back to sequential');
-    // Fallback: process each quality sequentially (avoids OOM on low-RAM servers)
-    return transcodeHlsSequential({ startSeconds, duration, qualities, hlsFolder, localUrlBase, ffmpegInput, movieId: id });
-  }
-
-  // ── Build master.m3u8 ───────────────────────────────────────────────────
-  // FFmpeg creates it automatically, but we rebuild it to ensure correct paths
-  writeMasterPlaylist(hlsFolder, qualities);
-
-  const out = await buildLocalHlsOutput({ qualities, hlsFolder, localUrlBase, movieId: id });
-
-  return {
-    hlsUrl: out.masterUrl,
-    videoQualities: out.renditions,
-  };
+  return transcodeHlsSequential({
+    startSeconds,
+    duration,
+    qualities,
+    hlsFolder,
+    localUrlBase,
+    ffmpegInput,
+    movieId: id,
+  });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Sequential fallback (one quality at a time — safer on low-RAM servers)
+// Sequential (one quality at a time — required on low-RAM EC2 to avoid OOM)
 // ─────────────────────────────────────────────────────────────────────────────
 const transcodeHlsSequential = async (opts: {
   startSeconds?: number;
@@ -265,6 +216,7 @@ const transcodeHlsSequential = async (opts: {
     if (duration !== undefined && duration > 0) args.push('-t', String(duration));
 
     args.push(
+      '-threads',      '2',
       '-vf',           `scale=${q.width}:${q.height}`,
       '-c:v',          'libx264',
       '-b:v',          q.bitrate,
