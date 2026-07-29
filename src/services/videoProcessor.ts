@@ -304,12 +304,23 @@ const buildLocalHlsOutput = async (opts: {
 // ─────────────────────────────────────────────────────────────────────────────
 export const processMovieHls = async (movieId: Types.ObjectId | string, sourceVideoUrl: string) => {
   try {
+    // Never accept a trailer as the movie source
+    if (/trailer/i.test(sourceVideoUrl)) {
+      throw new Error(`Refusing to build movie HLS from trailer URL: ${sourceVideoUrl}`);
+    }
+
     await MovieModel.findByIdAndUpdate(movieId, { processingStatus: 'processing' });
 
     const result = await transcodeHlsMultiResolution({
       id: movieId.toString(),
       sourceVideoUrl,
     });
+
+    const existing = await MovieModel.findById(movieId).select('trailerUrl').lean();
+    const trailer = String((existing as any)?.trailerUrl || '');
+    if (trailer && sourceVideoUrl.trim() === trailer.trim()) {
+      throw new Error('Refusing to overwrite movie with trailer URL');
+    }
 
     await MovieModel.findByIdAndUpdate(movieId, {
       hlsUrl:          result.hlsUrl,
