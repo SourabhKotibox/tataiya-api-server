@@ -150,9 +150,12 @@ export const createMovie = async (request: FastifyRequest, reply: FastifyReply) 
       }
     }
 
-    // Check if the uploaded video is a raw MP4 or local media file
-    const isLocalPath = body.hlsUrl && !body.hlsUrl.startsWith('http://') && !body.hlsUrl.startsWith('https://');
-    const isRawLocalVideo = isLocalPath && !body.hlsUrl.endsWith('.m3u8');
+    // Any non-HLS video (local OR S3/http MP4) must be transcoded to HLS.
+    // ffmpeg reads http(s) URLs directly, so S3 uploads work too.
+    const isRawLocalVideo =
+      typeof body.hlsUrl === 'string' &&
+      body.hlsUrl.trim() &&
+      !/\.m3u8(\?|#|$)/i.test(body.hlsUrl);
     if (isRawLocalVideo) {
       body.processingStatus = 'queued';
     } else {
@@ -231,9 +234,12 @@ export const updateMovie = async (request: FastifyRequest, reply: FastifyReply) 
       return reply.status(404).send({ success: false, error: 'Movie not found' });
     }
 
-    // Check if the hlsUrl has changed to a new raw MP4
-    const isLocalPath = body.hlsUrl && !body.hlsUrl.startsWith('http://') && !body.hlsUrl.startsWith('https://');
-    const isRawLocalVideo = isLocalPath && !body.hlsUrl.endsWith('.m3u8') && body.hlsUrl !== (existingMovie as any).hlsUrl;
+    // Any changed non-HLS video (local OR S3/http MP4) must be transcoded to HLS
+    const isRawLocalVideo =
+      typeof body.hlsUrl === 'string' &&
+      body.hlsUrl.trim() &&
+      !/\.m3u8(\?|#|$)/i.test(body.hlsUrl) &&
+      body.hlsUrl !== (existingMovie as any).hlsUrl;
     if (isRawLocalVideo) {
       body.processingStatus = 'queued';
     } else if (body.hlsUrl) {
