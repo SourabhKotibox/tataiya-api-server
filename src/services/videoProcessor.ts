@@ -128,7 +128,7 @@ const probeResolution = async (inputPath: string): Promise<{ width: number; heig
  */
 const filterQualitiesByResolution = (
   sourceHeight: number,
-  ladder: typeof HLS_QUALITY_LADDER
+  ladder: ReadonlyArray<(typeof HLS_QUALITY_LADDER)[number]>
 ) => ladder.filter((q) => q.height <= sourceHeight);
 
 // ─────────────────────────────────────────────────────────────────────────────
