@@ -18,6 +18,7 @@ import { UserViewModel } from '../models/UserView';
 import { TransactionModel } from '../models/Transaction';
 import { logger } from '../lib/logger';
 import uploadHandler from '../lib/uploadHandler';
+import { syncUserSubscription, normalizePlanKey } from './subscriptionController';
 
 // Optional user lookup helper
 const getOptionalUserToken = (request: FastifyRequest): string | null => {
@@ -584,33 +585,26 @@ export const updateAppProfile = async (request: FastifyRequest, reply: FastifyRe
     const userId = getOptionalUserId(request);
     if (!userId) return reply.status(401).send({ success: false, message: 'Unauthorized' });
 
-    const { name, email, avatar, phone } = (request.body || {}) as { name?: string; email?: string; avatar?: string; phone?: string };
+    const { name, email, avatar, phone } = (request.body || {}) as {
+      name?: string;
+      email?: string;
+      avatar?: string;
+      phone?: string;
+    };
 
-    const updateData: any = {};
-    if (name && typeof name === 'string') updateData.name = name.trim();
-    if (email && typeof email === 'string') updateData.email = email.toLowerCase().trim();
-    if (avatar && typeof avatar === 'string') updateData.avatar = avatar;
-    if (phone && typeof phone === 'string') updateData.phone = phone.trim();
-
-    if (Object.keys(updateData).length === 0) {
-      return reply.status(400).send({ success: false, message: 'No fields to update' });
-    }
-
-    let user = await UserModel.findByIdAndUpdate(
-      userId,
-      { $set: updateData },
-      { new: true, runValidators: true }
-    ).lean();
-
-    if (!user) {
-      const admin = await AdminUserModel.findByIdAndUpdate(
-        userId,
-        { $set: updateData },
-        { new: true, runValidators: true }
-      ).lean();
-
+    const current = await UserModel.findById(userId);
+    if (!current) {
+      // Admin users editing their own panel profile
+      const updateData: any = {};
+      if (name && typeof name === 'string') updateData.name = name.trim();
+      if (email && typeof email === 'string') updateData.email = email.toLowerCase().trim();
+      if (avatar && typeof avatar === 'string') updateData.avatar = avatar;
+      if (phone && typeof phone === 'string') updateData.phone = phone.trim();
+      if (Object.keys(updateData).length === 0) {
+        return reply.status(400).send({ success: false, message: 'No fields to update' });
+      }
+      const admin = await AdminUserModel.findByIdAndUpdate(userId, { $set: updateData }, { new: true, runValidators: true }).lean();
       if (!admin) return reply.status(404).send({ success: false, message: 'User not found' });
-
       return reply.send({
         success: true,
         data: {
@@ -623,22 +617,157 @@ export const updateAppProfile = async (request: FastifyRequest, reply: FastifyRe
       });
     }
 
+    const updateData: any = {};
+    if (name && typeof name === 'string') updateData.name = name.trim();
+    if (avatar && typeof avatar === 'string') updateData.avatar = avatar;
+    if (phone && typeof phone === 'string') updateData.phone = phone.trim().replace(/\D/g, '').slice(-10);
+
+    const nextEmail =
+      email && typeof email === 'string' ? email.toLowerCase().trim() : null;
+
+    // ── Email change: claim subscription from the account that already owns this email ──
+    if (nextEmail && nextEmail !== String(current.email || '').toLowerCase()) {
+      if (nextEmail.endsWith('@temp.local')) {
+        return reply.status(400).send({ success: false, message: 'Please enter a real email address' });
+      }
+
+      const emailOwner = await UserModel.findOne({
+        email: nextEmail,
+        _id: { $ne: current._id },
+      });
+
+      if (emailOwner) {
+        const ownerId = emailOwner._id;
+        const currentIsTemp = String(current.email || '').endsWith('@temp.local');
+        const ownerHasPhone = !!(emailOwner.phone && String(emailOwner.phone).replace(/\D/g, '').length >= 10);
+        const currentHasPhone = !!(current.phone && String(current.phone).replace(/\D/g, '').length >= 10);
+
+        // Safe to merge when current is OTP/temp account, or email-owner has no conflicting phone
+        const canClaim =
+          currentIsTemp ||
+          !ownerHasPhone ||
+          (currentHasPhone && String(emailOwner.phone) === String(current.phone));
+
+        if (!canClaim) {
+          return reply.status(400).send({
+            success: false,
+            message:
+              'This email is already used by another account. Sign in with that email, or contact support to link your subscription.',
+          });
+        }
+
+        // Move active (and recent) subscriptions to the logged-in user
+        await SubscriptionModel.updateMany({ userId: ownerId }, { $set: { userId: current._id } });
+        await TransactionModel.updateMany({ userId: ownerId }, { $set: { userId: current._id } }).catch(() => {});
+
+        // Merge wishlist / likes / progress / downloads onto current session user
+        await Promise.all([
+          UserWishlistModel.updateMany({ userId: ownerId }, { $set: { userId: current._id } }).catch(() => {}),
+          UserLikeModel.updateMany({ userId: ownerId }, { $set: { userId: current._id } }).catch(() => {}),
+          UserWatchProgressModel.updateMany({ userId: ownerId }, { $set: { userId: current._id } }).catch(() => {}),
+          UserDownloadModel.updateMany({ userId: ownerId }, { $set: { userId: current._id } }).catch(() => {}),
+          UserViewModel.updateMany({ userId: ownerId }, { $set: { userId: current._id } }).catch(() => {}),
+          ReviewModel.updateMany({ userId: ownerId }, { $set: { userId: current._id } }).catch(() => {}),
+        ]);
+
+        // Free the email on the other account so unique index allows the update
+        await UserModel.findByIdAndUpdate(ownerId, {
+          $set: {
+            email: `merged_${ownerId}@merged.local`,
+            subscriptionStatus: 'inactive',
+            subscriptionPlan: 'free',
+            subscriptionExpiry: null,
+            subscriptionPlanId: null,
+          },
+          ...(currentHasPhone &&
+          emailOwner.phone &&
+          String(emailOwner.phone) === String(current.phone)
+            ? { $unset: { phone: 1 } }
+            : {}),
+        });
+
+        updateData.email = nextEmail;
+        if (!current.name || current.name === 'User') {
+          if (emailOwner.name && emailOwner.name !== 'User') updateData.name = emailOwner.name;
+        }
+        if (!current.avatar && emailOwner.avatar) updateData.avatar = emailOwner.avatar;
+
+        logger.info(
+          { fromUserId: String(ownerId), toUserId: String(current._id), email: nextEmail },
+          'Claimed email account subscription into logged-in profile'
+        );
+      } else {
+        updateData.email = nextEmail;
+      }
+    }
+
+    // Phone uniqueness
+    if (updateData.phone) {
+      const phoneOwner = await UserModel.findOne({
+        phone: updateData.phone,
+        _id: { $ne: current._id },
+      }).lean();
+      if (phoneOwner) {
+        return reply.status(400).send({
+          success: false,
+          message: 'This phone number is already registered to another account.',
+        });
+      }
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return reply.status(400).send({ success: false, message: 'No fields to update' });
+    }
+
+    Object.assign(current, updateData);
+    await current.save();
+
+    // Sync User.subscription* from any active Subscription now on this account
+    const liveSub = await SubscriptionModel.findOne({
+      userId: current._id,
+      status: 'active',
+      $or: [{ endDate: { $gte: new Date() } }, { endDate: null }, { endDate: { $exists: false } }],
+    })
+      .sort({ endDate: -1 })
+      .lean();
+
+    if (liveSub) {
+      await syncUserSubscription(current._id, {
+        plan: liveSub.plan,
+        status: 'active',
+        endDate: liveSub.endDate,
+        planId: liveSub.planId,
+      });
+    }
+
+    const refreshed = await UserModel.findById(current._id).lean();
+
     return reply.send({
       success: true,
+      message: liveSub
+        ? 'Profile updated. Your subscription is now linked to this account.'
+        : 'Profile updated successfully',
       data: {
-        id: (user._id as any).toString(),
-        name: user.name,
-        email: user.email,
-        avatar: (user as any).avatar || null,
-        phone: (user as any).phone || null,
+        id: String(refreshed?._id || current._id),
+        name: refreshed?.name || current.name,
+        email: refreshed?.email || current.email,
+        avatar: (refreshed as any)?.avatar || (current as any).avatar || null,
+        phone: (refreshed as any)?.phone || (current as any).phone || null,
+        subscription: !!liveSub,
+        subscriptionPlan: liveSub ? normalizePlanKey(liveSub.plan) : (refreshed as any)?.subscriptionPlan || 'free',
+        subscriptionStatus: liveSub ? 'active' : (refreshed as any)?.subscriptionStatus || 'inactive',
+        subscriptionExpiry: liveSub?.endDate || (refreshed as any)?.subscriptionExpiry || null,
       },
     });
   } catch (error: any) {
     logger.error({ error }, 'Error updating app profile');
     if (error.code === 11000) {
-      return reply.status(400).send({ success: false, message: 'This email or phone number is already registered to another account.' });
+      return reply.status(400).send({
+        success: false,
+        message: 'This email or phone number is already registered to another account.',
+      });
     }
-    return reply.status(500).send({ success: false, message: 'Failed to update profile' });
+    return reply.status(500).send({ success: false, message: error.message || 'Failed to update profile' });
   }
 };
 
