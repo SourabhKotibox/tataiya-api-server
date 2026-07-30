@@ -12,6 +12,7 @@ import {
   approveMovie,
   rejectMovie,
   getMovieProcessingStatus,
+  reprocessMovieHls,
 } from '../controllers/movieController';
 import { requirePermission } from '../middlewares/rbac';
 
@@ -51,6 +52,9 @@ const movie: FastifyPluginAsync = async (fastify) => {
 
   // Poll HLS processing status — used by admin panel progress indicator
   fastify.get('/:id/processing-status', getMovieProcessingStatus);
+
+  // Queue HLS for an existing movie (admin "Generate HLS" button)
+  fastify.post('/:id/reprocess-hls', { onRequest: [requirePermission('movies', 'canEdit')] }, reprocessMovieHls);
 };
 
 export default movie;

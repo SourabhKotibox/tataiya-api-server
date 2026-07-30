@@ -605,3 +605,77 @@ export const getMovieProcessingStatus = async (request: FastifyRequest, reply: F
     return reply.status(500).send({ success: false, error: error.message });
   }
 };
+
+/**
+ * Admin: queue HLS transcoding for an existing movie.
+ * Uses sourceVideoUrl / videoUrl / non-m3u8 hlsUrl — never the trailer.
+ */
+export const reprocessMovieHls = async (request: FastifyRequest, reply: FastifyReply) => {
+  try {
+    const { id } = request.params as { id: string };
+    const movie: any = await MovieModel.findById(id).lean();
+    if (!movie) {
+      return reply.status(404).send({ success: false, error: 'Movie not found' });
+    }
+
+    const trailer = String(movie.trailerUrl || '').trim();
+    const isTrailerLike = (u: string) => {
+      if (!u) return false;
+      if (trailer && u.trim() === trailer) return true;
+      return /trailer/i.test(u.split('/').pop() || '');
+    };
+    const isMp4Like = (u: any) =>
+      typeof u === 'string' &&
+      u.trim() &&
+      !u.startsWith('blob:') &&
+      !/\.m3u8(\?|#|$)/i.test(u);
+
+    let source =
+      [movie.sourceVideoUrl, movie.videoUrl, movie.hlsUrl].find(
+        (u: any) => isMp4Like(u) && !isTrailerLike(String(u))
+      ) || '';
+
+    // Optional override from admin body: { sourceVideoUrl: "..." }
+    const body = (request.body || {}) as { sourceVideoUrl?: string };
+    if (body.sourceVideoUrl && isMp4Like(body.sourceVideoUrl) && !isTrailerLike(body.sourceVideoUrl)) {
+      source = body.sourceVideoUrl.trim();
+    }
+
+    if (!source) {
+      return reply.status(400).send({
+        success: false,
+        error:
+          'No full-movie MP4 found. Set Movie Video to the full film (not the trailer), save, then click Generate HLS again.',
+      });
+    }
+
+    await MovieModel.findByIdAndUpdate(id, {
+      $set: {
+        processingStatus: 'queued',
+        processingError: null,
+        sourceVideoUrl: source,
+        videoUrl: source,
+        // Clear old / trailer HLS so the player does not keep using it
+        hlsUrl: source,
+        videoQualities: [],
+      },
+    });
+
+    const { processMovieInBackground } = await import('../services/videoProcessor');
+    processMovieInBackground(id, source);
+
+    return reply.send({
+      success: true,
+      message: 'HLS transcoding queued. This can take 30–60+ minutes per movie.',
+      data: {
+        id,
+        title: movie.title,
+        sourceVideoUrl: source,
+        processingStatus: 'queued',
+      },
+    });
+  } catch (error: any) {
+    logger.error({ error }, 'Error queueing movie HLS reprocess');
+    return reply.status(500).send({ success: false, error: error.message });
+  }
+};
