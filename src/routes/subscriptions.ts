@@ -9,7 +9,8 @@ import {
   deleteSubscription,
   bulkDeleteSubscriptions,
   createRazorpayOrder,
-  verifyRazorpayPayment
+  verifyRazorpayPayment,
+  listAppSubscriptionPlans,
 } from '../controllers/subscriptionController';
 
 const subscriptionRoutes: FastifyPluginAsync = async (fastify) => {
@@ -19,7 +20,11 @@ const subscriptionRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.put('/subscriptions/:id', { onRequest: [requirePermission('subscriptions', 'canEdit')] }, updateSubscription);
   fastify.delete('/subscriptions/:id', { onRequest: [requirePermission('subscriptions', 'canDelete')] }, deleteSubscription);
   fastify.post('/subscriptions/bulk-delete', { onRequest: [requirePermission('subscriptions', 'canDelete')] }, bulkDeleteSubscriptions);
-  
+
+  // Public — mobile app plan list (no auth). Same data as /web/subscription-plans
+  fastify.get('/app/subscription-plans', listAppSubscriptionPlans);
+  fastify.get('/app/plans', listAppSubscriptionPlans);
+
   // Razorpay — user-facing (any authenticated user, not just admins)
   fastify.post('/app/subscription/razorpay/order', { preHandler: [authenticate] }, createRazorpayOrder);
   fastify.post('/app/subscription/razorpay/verify', { preHandler: [authenticate] }, verifyRazorpayPayment);

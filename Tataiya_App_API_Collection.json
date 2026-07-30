@@ -18,7 +18,7 @@
   "item": [
     {
       "name": "Auth",
-      "description": "Email/OTP/social login — used by both app and website",
+      "description": "Email/OTP/social login \u2014 used by both app and website",
       "item": [
         {
           "name": "Send OTP",
@@ -1898,7 +1898,7 @@
     },
     {
       "name": "Engagement",
-      "description": "Likes, views, wishlist, reviews — Bearer required where noted",
+      "description": "Likes, views, wishlist, reviews \u2014 Bearer required where noted",
       "item": [
         {
           "name": "Toggle Like",
@@ -2187,6 +2187,32 @@
               ]
             },
             "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Subscription Plans",
+      "description": "Public plan list for the mobile app (no auth). Use plan id with Razorpay order.",
+      "item": [
+        {
+          "name": "List Plans",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/app/subscription-plans",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "app",
+                "subscription-plans"
+              ]
+            },
+            "description": "Active plans from admin (name, price, limits). Alias: GET /api/app/plans"
           },
           "response": []
         }

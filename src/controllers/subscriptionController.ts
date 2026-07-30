@@ -1,6 +1,8 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { SubscriptionModel } from '../models/Subscription';
 import { SubscriptionPlanModel } from '../models/SubscriptionPlan';
+import { PlanLimitModel } from '../models/PlanLimit';
+import { SettingsModel } from '../models/Settings';
 import { UserModel } from '../models/User';
 
 const roundCurrency = (value: number) => Math.round(value * 100) / 100;
@@ -547,6 +549,57 @@ export const verifyRazorpayPayment = async (request: FastifyRequest, reply: Fast
     });
   } catch (error: any) {
     console.error('Razorpay Verify Error:', error);
+    return reply.status(500).send({ success: false, error: error.message });
+  }
+};
+
+/**
+ * Public list of active plans for the mobile app (and any client).
+ * Same shape as GET /api/web/subscription-plans so Flutter can use either path.
+ */
+export const listAppSubscriptionPlans = async (_request: FastifyRequest, reply: FastifyReply) => {
+  try {
+    const plans = await SubscriptionPlanModel.find({ status: true })
+      .sort({ level: 1, price: 1 })
+      .lean();
+
+    const limits = await PlanLimitModel.find({ planId: { $in: plans.map((p) => p._id) } }).lean();
+    const limitsByPlan = new Map(limits.map((l: any) => [l.planId.toString(), l]));
+
+    const settings = await SettingsModel.findOne().lean();
+    const currencySymbol = (settings as any)?.currencySymbol || '₹';
+
+    return reply.send({
+      success: true,
+      data: plans.map((plan) => {
+        const lim: any = limitsByPlan.get(plan._id.toString()) || {};
+        return {
+          id: plan._id.toString(),
+          name: plan.name,
+          duration: plan.duration,
+          durationValue: plan.durationValue,
+          price: plan.price,
+          discount: plan.discount,
+          totalPrice: plan.totalPrice,
+          description: plan.description,
+          level: plan.level,
+          currencySymbol,
+          durationLabel: formatDurationLabel(plan.duration, plan.durationValue),
+          limits: {
+            ads: lim.ads ?? plan.level <= 1,
+            adFree: lim.ads === false || (plan.level >= 2 && lim.ads !== true),
+            maxDevices: lim.deviceLimitCount || (plan.level >= 3 ? 4 : plan.level >= 2 ? 2 : 1),
+            downloadEnabled: lim.downloadStatus ?? plan.level >= 2,
+            maxResolution: lim.q4k ? '4K' : lim.q1080p ? '1080p' : lim.q720p ? '720p' : '480p',
+            q480p: lim.q480p ?? true,
+            q720p: lim.q720p ?? plan.level >= 1,
+            q1080p: lim.q1080p ?? plan.level >= 2,
+            q4k: lim.q4k ?? plan.level >= 3,
+          },
+        };
+      }),
+    });
+  } catch (error: any) {
     return reply.status(500).send({ success: false, error: error.message });
   }
 };
