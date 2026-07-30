@@ -249,6 +249,8 @@ export const verifyOtp = async (request: FastifyRequest, reply: FastifyReply) =>
       expiresIn: process.env.MOBILE_JWT_EXPIRES_IN || '7d',
     });
 
+    const sub = await resolveSubscriptionPayload(userDoc);
+
     // Return full profile so the app can pre-fill name, email, avatar, subscription
     return reply.status(200).send({
       success: true,
@@ -260,9 +262,7 @@ export const verifyOtp = async (request: FastifyRequest, reply: FastifyReply) =>
         : null,
       phone: (userDoc as any).phone || null,
       avatar: (userDoc as any).avatar || null,
-      subscriptionPlan: userDoc.subscriptionPlan || 'free',
-      subscriptionStatus: userDoc.subscriptionStatus || 'inactive',
-      subscriptionExpiry: (userDoc as any).subscriptionExpiry || null,
+      ...sub,
       expiresIn: 604800, // 7 days in seconds
     });
   } catch (error) {
