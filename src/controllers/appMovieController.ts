@@ -6,9 +6,31 @@ import { UserLikeModel } from '../models/UserLike';
 import { UserWishlistModel } from '../models/UserWishlist';
 import { UserWatchProgressModel } from '../models/UserWatchProgress';
 import { UserDownloadModel } from '../models/UserDownload';
+import { SubscriptionModel } from '../models/Subscription';
 import { logger } from '../lib/logger';
 import { buildShareUrl } from '../lib/config';
 import { QUALITY_LABELS, QUALITY_PLAN_GATE } from './watchController';
+import { normalizePlanKey } from './subscriptionController';
+
+const PLAN_LEVELS: Record<string, number> = {
+  free: 0,
+  basic: 1,
+  standard: 2,
+  premium: 3,
+};
+
+const normalizePlan = (plan: string | null | undefined): string =>
+  String(plan || 'free').trim().toLowerCase();
+
+/** True when the user cannot access content/quality that requires `requiredPlan`. */
+const isPlanLocked = (userPlan: string, requiredPlan: string): boolean => {
+  const plan = normalizePlan(userPlan);
+  const required = normalizePlan(requiredPlan);
+  if (required === 'free') return false;
+  // Any active paid plan unlocks paid titles (same rule as watchController).
+  if (plan === 'free') return true;
+  return (PLAN_LEVELS[plan] ?? 0) < (PLAN_LEVELS[required] ?? 1);
+};
 
 // Helper to convert relative URLs to absolute URLs
 const toAbsoluteUrl = (
@@ -36,11 +58,28 @@ const getOptionalUser = async (request: FastifyRequest): Promise<{ userId: strin
     const decoded = server.jwt.verify(authHeader.slice(7)) as any;
     if (!decoded?.id) return null;
 
-    const user = await UserModel.findById(decoded.id).select('subscriptionPlan subscriptionStatus subscriptionExpiry').lean();
-    if (!user) return { userId: decoded.id, userPlan: 'free' };
+    const userId = decoded.id;
+    const liveSub = await SubscriptionModel.findOne({
+      userId,
+      status: 'active',
+      $or: [{ endDate: { $gte: new Date() } }, { endDate: null }, { endDate: { $exists: false } }],
+    })
+      .sort({ endDate: -1 })
+      .lean();
 
-    const isActive = user.subscriptionStatus === 'active' && (!user.subscriptionExpiry || user.subscriptionExpiry > new Date());
-    return { userId: decoded.id, userPlan: isActive ? (user.subscriptionPlan || 'free') : 'free' };
+    if (liveSub) {
+      return { userId, userPlan: normalizePlanKey(liveSub.plan) || 'standard' };
+    }
+
+    const user = await UserModel.findById(userId).select('subscriptionPlan subscriptionStatus subscriptionExpiry').lean();
+    if (!user) return { userId, userPlan: 'free' };
+
+    const plan = normalizePlan(user.subscriptionPlan);
+    const isActive =
+      user.subscriptionStatus === 'active' &&
+      plan !== 'free' &&
+      (!user.subscriptionExpiry || user.subscriptionExpiry > new Date());
+    return { userId, userPlan: isActive ? plan : 'free' };
   } catch {
     return null;
   }
@@ -175,6 +214,10 @@ export const getMovieDetail = async (request: FastifyRequest, reply: FastifyRepl
       (a, b) => QUALITY_ORDER.indexOf(a.quality) - QUALITY_ORDER.indexOf(b.quality)
     );
 
+    const planRequired = normalizePlan(movie.planRequired);
+    // Unsubscribed / free users are locked (app paywall). Paid plan unlocks.
+    const contentLocked = normalizePlan(userPlan) === 'free';
+
     const videoSettings = hlsUrl
       ? [
           {
@@ -182,15 +225,14 @@ export const getMovieDetail = async (request: FastifyRequest, reply: FastifyRepl
             label: 'Auto',
             description: 'Adjusts quality automatically based on your connection',
             url: toAbsoluteUrl(request, hlsUrl),
-            requiresPlan: 'free',
-            isLocked: false,
+            requiresPlan: 'standard',
+            isLocked: contentLocked,
           },
           ...sortedQualities.map((q: any) => {
             const sizeMB = q.size ? `${Math.round(q.size / (1024 * 1024))} MB` : null;
             const label = QUALITY_LABELS[q.quality] || q.quality;
             const requiredPlan = QUALITY_PLAN_GATE[q.quality] || 'free';
-            // isLocked: currently always false — flip to real check when subscriptions go live
-            const isLocked = false;
+            const isLocked = contentLocked || isPlanLocked(userPlan, requiredPlan);
             const description = q.quality === '144p' ? 'Very low quality — for slow connections' :
                                 q.quality === '240p' ? 'Low quality — saves data' :
                                 q.quality === '360p' ? 'Low quality' :
@@ -243,7 +285,7 @@ export const getMovieDetail = async (request: FastifyRequest, reply: FastifyRepl
           { value: 1.75, label: '1.75x' },
           { value: 2.0, label: '2.0x' }
         ],
-        isLocked: movie.planRequired !== 'free' && userPlan === 'free',
+        isLocked: contentLocked,
 
         // Meta
         genres: genreNames,
@@ -256,7 +298,7 @@ export const getMovieDetail = async (request: FastifyRequest, reply: FastifyRepl
         durationFormatted,
         episodeMeta: `HD • ${genreNames.join(', ')} • ${durationFormatted || 'N/A'}`,
         imdbRating: movie.imdbRating || null,
-        planRequired: movie.planRequired || 'free',
+        planRequired: planRequired === 'free' ? 'standard' : planRequired,
         isExclusive: movie.isExclusive || false,
         featured: movie.featured || false,
         trending: movie.trending || false,

@@ -136,9 +136,7 @@ const buildNamedQualities = (
     const absoluteUrl = toAbsoluteUrl(request, q.url);
     if (!absoluteUrl) continue;
     const requiredPlan = QUALITY_PLAN_GATE[q.quality] || 'free';
-    // isLocked: currently always false — flip to real check when subscriptions go live:
-    // const isLocked = PLAN_LEVELS[userPlan] < PLAN_LEVELS[requiredPlan];
-    const isLocked = false;
+    const isLocked = (PLAN_LEVELS[userPlan] ?? 0) < (PLAN_LEVELS[requiredPlan] ?? 0);
     result.push({
       key:          q.quality,
       label:        QUALITY_LABELS[q.quality] || q.quality,

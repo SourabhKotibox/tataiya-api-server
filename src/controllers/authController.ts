@@ -16,12 +16,15 @@ export const login = async (request: FastifyRequest, reply: FastifyReply) => {
       });
     }
 
+    // Lean + only fields we need — faster than full document hydrate
     const admin = await AdminUserModel.findOne({
-      email: email.toLowerCase(),
+      email: email.toLowerCase().trim(),
       isActive: true,
-    });
+    })
+      .select('_id email name role passwordHash')
+      .lean();
 
-    if (!admin) {
+    if (!admin?.passwordHash) {
       return reply.status(401).send({ error: 'Invalid credentials' });
     }
 
@@ -37,11 +40,6 @@ export const login = async (request: FastifyRequest, reply: FastifyReply) => {
       role: admin.role,
     };
 
-    await AdminUserModel.findByIdAndUpdate(admin._id, {
-      $set: { lastLogin: new Date() },
-      $inc: { loginCount: 1 },
-    });
-
     const server = request.server as any;
     const accessToken = server.jwt.sign(payload, {
       expiresIn: process.env.JWT_EXPIRES_IN || '48h',
@@ -54,7 +52,14 @@ export const login = async (request: FastifyRequest, reply: FastifyReply) => {
       }
     );
 
-    await storeRefreshToken(refreshToken, payload.id);
+    // Don't block the login response on secondary work (Redis / lastLogin)
+    void Promise.all([
+      storeRefreshToken(refreshToken, payload.id).catch(() => {}),
+      AdminUserModel.findByIdAndUpdate(admin._id, {
+        $set: { lastLogin: new Date() },
+        $inc: { loginCount: 1 },
+      }).catch(() => {}),
+    ]);
 
     return reply.status(200).send({
       accessToken,

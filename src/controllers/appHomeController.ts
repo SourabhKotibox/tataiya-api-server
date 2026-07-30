@@ -7,11 +7,13 @@ import { UserModel } from '../models/User';
 import { LanguageModel } from '../models/Language';
 import { UserWatchProgressModel } from '../models/UserWatchProgress';
 import { AppSettingModel } from '../models/AppSetting';
+import { SubscriptionModel } from '../models/Subscription';
 import { logger } from '../lib/logger';
 import mongoose from 'mongoose';
 
 // Base URL for the backend API (used for smart share links)
 import { buildShareUrl } from '../lib/config';
+import { normalizePlanKey } from './subscriptionController';
 
 // ── URL Resolver ─────────────────────────────────────────────────────────────
 // Converts any stored path/key to a proper full URL:
@@ -29,8 +31,10 @@ const buildUrlResolver = (request: FastifyRequest) =>
   };
 
 // Helper: try to extract userId from JWT (optional auth — no error if missing/invalid)
-const getAuthData = (request: FastifyRequest): { userId: string | null; profileId: string | null; userPlan: string } => {
-  let userId = null;
+const getAuthData = async (
+  request: FastifyRequest
+): Promise<{ userId: string | null; profileId: string | null; userPlan: string }> => {
+  let userId: string | null = null;
   let profileId = (request.headers['x-profile-id'] as string) || null;
   let userPlan = 'free';
   try {
@@ -39,7 +43,28 @@ const getAuthData = (request: FastifyRequest): { userId: string | null; profileI
       const server = request.server as any;
       const decoded = server.jwt.verify(authHeader.slice(7)) as any;
       userId = decoded?.id || null;
-      userPlan = decoded?.plan || 'free';
+      if (userId) {
+        const liveSub = await SubscriptionModel.findOne({
+          userId,
+          status: 'active',
+          $or: [{ endDate: { $gte: new Date() } }, { endDate: null }, { endDate: { $exists: false } }],
+        })
+          .sort({ endDate: -1 })
+          .lean();
+        if (liveSub) {
+          userPlan = normalizePlanKey(liveSub.plan) || 'standard';
+        } else {
+          const user = await UserModel.findById(userId)
+            .select('subscriptionPlan subscriptionStatus subscriptionExpiry')
+            .lean();
+          const plan = String(user?.subscriptionPlan || 'free').toLowerCase();
+          const isActive =
+            user?.subscriptionStatus === 'active' &&
+            plan !== 'free' &&
+            (!user.subscriptionExpiry || user.subscriptionExpiry > new Date());
+          userPlan = isActive ? plan : 'free';
+        }
+      }
     }
   } catch {}
   return { userId, profileId, userPlan };
@@ -51,7 +76,11 @@ const mapContentItem = (
   resolveUrl: (url: string | null | undefined) => string | null,
   likeCount = 0,
   isLikedByUser = false,
-) => ({
+  userPlan = 'free',
+) => {
+  const contentPlan = item.planRequired || item.plan || 'free';
+  const isLocked = String(userPlan || 'free').toLowerCase() === 'free';
+  return {
   id: item._id.toString(),
   title: item.title,
   description: item.description,
@@ -79,8 +108,10 @@ const mapContentItem = (
   updatedAt: item.updatedAt,
   videoUrl: resolveUrl(item.hlsUrl || null),
   trailerUrl: resolveUrl(item.trailerUrl || null),
-  contentPlan: item.planRequired || item.plan || 'free',
-});
+  contentPlan: String(contentPlan).toLowerCase() === 'free' ? 'standard' : contentPlan,
+  isLocked,
+  };
+};
 
 const populateBannersContent = async (banners: any[]) => {
   const contentIds = banners.map((b) => b.contentId).filter(Boolean);
@@ -113,6 +144,7 @@ const mapBanner = (
   resolveUrl: (url: string | null | undefined) => string | null,
   likeCount = 0,
   isLikedByUser = false,
+  userPlan = 'free',
 ) => {
   const content = banner.contentId;
   const thumbnail = resolveUrl(content?.thumbnail || banner.imageUrl);
@@ -127,7 +159,7 @@ const mapBanner = (
     ctaText: banner.ctaText,
     ctaLink: banner.ctaLink,
     contentId: banner.contentId?._id?.toString(),
-    content: content ? mapContentItem(content, resolveUrl, likeCount, isLikedByUser) : undefined,
+    content: content ? mapContentItem(content, resolveUrl, likeCount, isLikedByUser, userPlan) : undefined,
     type: banner.type,
     contentType: banner.contentType,
     position: banner.position,
@@ -154,7 +186,7 @@ export const getHomePage = async (request: FastifyRequest, reply: FastifyReply) 
       limit?: string;
     };
 
-    const { userId, profileId } = getAuthData(request);
+    const { userId, profileId, userPlan } = await getAuthData(request);
 
     // Build URL resolver (local storage)
     const resolveUrl = buildUrlResolver(request);
@@ -307,7 +339,7 @@ export const getHomePage = async (request: FastifyRequest, reply: FastifyReply) 
         const cid = item._id.toString();
         const likeCount = item.likes || 0;
         const isLikedByUser = likedContentIdSet.has(cid);
-        return mapContentItem(item, resolveUrl, likeCount, isLikedByUser);
+        return mapContentItem(item, resolveUrl, likeCount, isLikedByUser, userPlan);
       }),
     }));
 
@@ -328,7 +360,7 @@ export const getHomePage = async (request: FastifyRequest, reply: FastifyReply) 
         const likeCount = item.likes || 0;
         const isLikedByUser = likedContentIdSet.has(cid);
 
-        const mapped: any = mapContentItem(item, resolveUrl, likeCount, isLikedByUser);
+        const mapped: any = mapContentItem(item, resolveUrl, likeCount, isLikedByUser, userPlan);
 
         // Inject watch progress detail
         mapped.watchProgress = {
@@ -407,7 +439,7 @@ export const getAppBanners = async (request: FastifyRequest, reply: FastifyReply
 
     const banners = await populateBannersContent(bannersRaw);
 
-    const { userId } = getAuthData(request);
+    const { userId, userPlan } = await getAuthData(request);
     const allContentIds = banners
       .filter(b => b.contentId)
       .map(b => new mongoose.Types.ObjectId((b.contentId as any)._id.toString()));
@@ -420,11 +452,11 @@ export const getAppBanners = async (request: FastifyRequest, reply: FastifyReply
     }
 
     const mappedBanners = banners.map(banner => {
-      if (!banner.contentId) return mapBanner(banner, resolveUrl);
+      if (!banner.contentId) return mapBanner(banner, resolveUrl, 0, false, userPlan);
       const cid = (banner.contentId as any)._id.toString();
       const likeCount = (banner.contentId as any).likes || 0;
       const isLikedByUser = likedContentIdSet.has(cid);
-      return mapBanner(banner, resolveUrl, likeCount, isLikedByUser);
+      return mapBanner(banner, resolveUrl, likeCount, isLikedByUser, userPlan);
     });
 
     return reply.send({
