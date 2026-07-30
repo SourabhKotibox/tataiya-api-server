@@ -22,6 +22,7 @@ API_DIR="${API_DIR:-/var/www/tataiya/api-server}"
 if [ -d "$API_DIR/.git" ]; then
   cd "$API_DIR"
   git pull origin main
+  npm run build
   if command -v pm2 >/dev/null 2>&1; then
     pm2 restart all || true
   elif systemctl list-units --type=service | grep -qi tataiya; then

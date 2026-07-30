@@ -222,23 +222,22 @@ export const getMovieDetail = async (request: FastifyRequest, reply: FastifyRepl
     const planRequired = normalizePlan(movie.planRequired);
     // Free / unsubscribed users → locked. Only an active paid plan unlocks.
     const contentLocked = normalizePlanKey(userPlan) === 'free';
+    const effectivePlanRequired = planRequired === 'free' ? 'standard' : planRequired;
 
-    const videoSettings = hlsUrl
+    const rawVideoSettings = hlsUrl
       ? [
           {
             key: 'auto',
             label: 'Auto',
             description: 'Adjusts quality automatically based on your connection',
             url: toAbsoluteUrl(request, hlsUrl),
-            requiresPlan: 'standard',
+            requiresPlan: effectivePlanRequired,
             isLocked: contentLocked,
           },
           ...sortedQualities.map((q: any) => {
             const sizeMB = q.size ? `${Math.round(q.size / (1024 * 1024))} MB` : null;
             const label = QUALITY_LABELS[q.quality] || q.quality;
-            const requiredPlan = QUALITY_PLAN_GATE[q.quality] || 'free';
-            // Always mirror content lock for free users (app may check quality rows)
-            const isLocked = contentLocked || isPlanLocked(userPlan, requiredPlan);
+            const requiredPlan = QUALITY_PLAN_GATE[q.quality] || effectivePlanRequired;
             const description = q.quality === '144p' ? 'Very low quality — for slow connections' :
                                 q.quality === '240p' ? 'Low quality — saves data' :
                                 q.quality === '360p' ? 'Low quality' :
@@ -253,11 +252,20 @@ export const getMovieDetail = async (request: FastifyRequest, reply: FastifyRepl
               label,
               description: sizeMB ? `${description} (${sizeMB})` : description,
               url: toAbsoluteUrl(request, q.url),
-              requiresPlan: requiredPlan,
-              isLocked,
+              requiresPlan: requiredPlan === 'free' ? effectivePlanRequired : requiredPlan,
+              isLocked: contentLocked || isPlanLocked(userPlan, requiredPlan),
             };
           })
         ]
+      : null;
+
+    // Force quality rows to match content lock (app reads videoSettings[].isLocked)
+    const videoSettings = rawVideoSettings
+      ? rawVideoSettings.map((q) => ({
+          ...q,
+          isLocked: contentLocked ? true : q.isLocked,
+          requiresPlan: contentLocked && q.requiresPlan === 'free' ? effectivePlanRequired : q.requiresPlan,
+        }))
       : null;
 
     // ── 7. Build response ─────────────────────────────────────────────────────
@@ -304,7 +312,7 @@ export const getMovieDetail = async (request: FastifyRequest, reply: FastifyRepl
         durationFormatted,
         episodeMeta: `HD • ${genreNames.join(', ')} • ${durationFormatted || 'N/A'}`,
         imdbRating: movie.imdbRating || null,
-        planRequired: planRequired === 'free' ? 'standard' : planRequired,
+        planRequired: effectivePlanRequired,
         isExclusive: movie.isExclusive || false,
         featured: movie.featured || false,
         trending: movie.trending || false,
