@@ -96,12 +96,20 @@ export class MessageCentralService {
     const cfg = await this.loadConfig();
     const phone = String(mobileNumber || '').replace(/\D/g, '').slice(-10);
 
+    if (cfg.enabled && (!cfg.customerId || !cfg.password)) {
+      return {
+        success: false,
+        message:
+          'Message Central is enabled but API keys are missing. Add Customer ID and Password in Admin → Settings → Message Central.',
+      };
+    }
+
     if (!this.useLive(cfg)) {
-      logger.warn('Message Central not configured — using static OTP 1234');
+      logger.warn('Message Central disabled — using static OTP 1234 (dev only)');
       return {
         success: true,
         verificationId: STATIC_VERIFICATION_ID,
-        message: `OTP sent successfully. Use ${STATIC_OTP} as OTP (Message Central not configured)`,
+        message: `OTP sent successfully. Use ${STATIC_OTP} as OTP (Message Central disabled)`,
       };
     }
 
@@ -170,8 +178,19 @@ export class MessageCentralService {
     const cfg = await this.loadConfig();
     const otp = String(code || '').trim();
 
-    // Static / test path
+    if (cfg.enabled && (!cfg.customerId || !cfg.password)) {
+      return {
+        success: false,
+        message:
+          'Message Central is enabled but API keys are missing. Configure them in Admin → Settings → Message Central.',
+      };
+    }
+
+    // Static / test path only when Message Central is disabled
     if (!this.useLive(cfg) || verificationId === STATIC_VERIFICATION_ID) {
+      if (this.useLive(cfg) && verificationId === STATIC_VERIFICATION_ID) {
+        return { success: false, message: 'Invalid verification session. Request a new OTP.' };
+      }
       if (otp === STATIC_OTP) {
         return { success: true, message: 'OTP verified successfully' };
       }

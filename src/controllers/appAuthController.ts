@@ -434,6 +434,16 @@ export const loginUser = async (request: FastifyRequest, reply: FastifyReply) =>
 
     // Determine if input is a phone number (no '@') or email
     const isPhone = !emailOrPhone.includes('@');
+
+    // Phone auth must go through Message Central OTP when enabled
+    if (isPhone && (siteSettings as any)?.messageCentralEnabled) {
+      return reply.status(400).send({
+        success: false,
+        useOtp: true,
+        message: 'Phone login uses OTP via Message Central. Call /api/app/auth/send-otp then /api/app/auth/verify-otp.',
+      });
+    }
+
     const user = await UserModel.findOne(isPhone ? { phone: emailOrPhone } : { email: emailOrPhone });
 
     if (!user) return reply.status(401).send({ success: false, message: 'No account found. Please register first.' });
