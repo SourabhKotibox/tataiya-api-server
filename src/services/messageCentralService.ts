@@ -28,6 +28,33 @@ interface MessageCentralConfig {
 const STATIC_OTP = '1234';
 const STATIC_VERIFICATION_ID = 'static-otp-verification';
 const DEFAULT_BASE = 'https://cpaas.messagecentral.com';
+const MC_TIMEOUT_MS = 12_000;
+
+/** Static 1234 only when explicitly allowed (local/dev). Never on production by default. */
+const allowStaticOtp = () =>
+  process.env.ALLOW_STATIC_OTP === 'true' ||
+  process.env.NODE_ENV === 'development';
+
+async function fetchJson(
+  url: string,
+  init: RequestInit & { timeoutMs?: number } = {}
+): Promise<{ res: Response; data: any }> {
+  const { timeoutMs = MC_TIMEOUT_MS, ...rest } = init;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...rest, signal: controller.signal });
+    const data: any = await res.json().catch(() => ({}));
+    return { res, data };
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      throw new Error(`Message Central timed out after ${timeoutMs / 1000}s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 export class MessageCentralService {
   private cachedToken: string | null = null;
@@ -49,17 +76,18 @@ export class MessageCentralService {
     };
   }
 
-  /** Live OTP when enabled + Customer ID + (Auth Token OR password for token API) */
+  /** Live OTP when Customer ID + Auth Token (or password) are configured.
+   *  If keys exist, treat as live even if the enable switch was left off. */
   private useLive(cfg: MessageCentralConfig) {
-    return cfg.enabled && !!cfg.customerId && (!!cfg.authToken || !!cfg.password);
+    const hasKeys = !!cfg.customerId && (!!cfg.authToken || !!cfg.password);
+    return hasKeys && (cfg.enabled || !!cfg.authToken);
   }
 
   private missingKeysMessage() {
-    return 'Message Central is enabled but credentials are incomplete. In Admin → Settings → Message Central, paste Customer ID and Auth Token from console.messagecentral.com (API Credentials).';
+    return 'Message Gateway is not configured. Admin → Settings → Message Gateway (OTP): paste Customer ID + Auth Token, turn Enable ON, then Save.';
   }
 
   private async getAuthToken(cfg: MessageCentralConfig): Promise<string> {
-    // Prefer Auth Token pasted from Message Central console (API Credentials)
     if (cfg.authToken) {
       return cfg.authToken;
     }
@@ -82,8 +110,7 @@ export class MessageCentralService {
     });
 
     const url = `${cfg.baseUrl}/auth/v1/authentication/token?${params.toString()}`;
-    const res = await fetch(url, { method: 'GET' });
-    const data: any = await res.json().catch(() => ({}));
+    const { res, data } = await fetchJson(url, { method: 'GET' });
 
     const token =
       data?.token ||
@@ -98,12 +125,10 @@ export class MessageCentralService {
     }
 
     this.cachedToken = String(token);
-    // Tokens typically last ~1h — refresh a bit early
     this.tokenExpiresAt = Date.now() + 50 * 60 * 1000;
     return this.cachedToken;
   }
 
-  /** Invalidate cached generated token (not the pasted console token) */
   private clearToken() {
     this.cachedToken = null;
     this.tokenExpiresAt = 0;
@@ -113,39 +138,51 @@ export class MessageCentralService {
     const cfg = await this.loadConfig();
     const phone = String(mobileNumber || '').replace(/\D/g, '').slice(-10);
 
-    if (cfg.enabled && (!cfg.customerId || (!cfg.authToken && !cfg.password))) {
-      return { success: false, message: this.missingKeysMessage() };
+    if (!phone || phone.length !== 10) {
+      return { success: false, message: 'Enter a valid 10-digit mobile number' };
     }
 
     if (!this.useLive(cfg)) {
-      logger.warn('Message Central disabled — using static OTP 1234 (dev only)');
-      return {
-        success: true,
-        verificationId: STATIC_VERIFICATION_ID,
-        message: `OTP sent successfully. Use ${STATIC_OTP} as OTP (Message Central disabled)`,
-      };
+      if (allowStaticOtp()) {
+        logger.warn('Message Central not live — static OTP 1234 (ALLOW_STATIC_OTP / development)');
+        return {
+          success: true,
+          verificationId: STATIC_VERIFICATION_ID,
+          message: `OTP sent successfully. Use ${STATIC_OTP} as OTP (dev fallback)`,
+        };
+      }
+      logger.error(
+        {
+          enabled: cfg.enabled,
+          hasCustomerId: !!cfg.customerId,
+          hasAuthToken: !!cfg.authToken,
+          hasPassword: !!cfg.password,
+        },
+        'Message Central OTP blocked — not configured'
+      );
+      return { success: false, message: this.missingKeysMessage() };
     }
 
     try {
       let token = await this.getAuthToken(cfg);
       const params = new URLSearchParams({
         countryCode: cfg.countryCode,
+        customerId: cfg.customerId,
         flowType: cfg.flowType || 'SMS',
         mobileNumber: phone,
         otpLength: String(cfg.otpLength),
       });
 
-      const doSend = async (authToken: string) => {
-        const res = await fetch(`${cfg.baseUrl}/verification/v3/send?${params.toString()}`, {
+      const doSend = async (authToken: string) =>
+        fetchJson(`${cfg.baseUrl}/verification/v3/send?${params.toString()}`, {
           method: 'POST',
-          headers: { authToken },
+          headers: {
+            authToken,
+            Accept: 'application/json',
+          },
         });
-        const data: any = await res.json().catch(() => ({}));
-        return { res, data };
-      };
 
       let { res, data } = await doSend(token);
-      // Retry once with fresh generated token on auth failure (skip if using pasted console token)
       if (
         !cfg.authToken &&
         (res.status === 401 || data?.responseCode === 401 || /token|unauthor/i.test(String(data?.message || '')))
@@ -164,16 +201,25 @@ export class MessageCentralService {
       const ok =
         !!verificationId ||
         res.ok ||
-        data?.responseCode === 200 ||
-        data?.status === 200 ||
+        Number(data?.responseCode) === 200 ||
+        Number(data?.status) === 200 ||
         String(data?.message || '').toLowerCase().includes('success');
 
       if (!ok || !verificationId) {
         logger.error({ data, status: res.status }, 'Message Central send OTP failed');
         return {
           success: false,
-          message: data?.message || data?.errorMessage || 'Failed to send OTP via Message Central',
+          message:
+            data?.message ||
+            data?.errorMessage ||
+            data?.data?.message ||
+            `Failed to send OTP (HTTP ${res.status}). Check Auth Token / credits in Message Central.`,
         };
+      }
+
+      // Auto-flip enable flag if keys work but switch was off
+      if (!cfg.enabled) {
+        void SettingsModel.updateOne({}, { $set: { messageCentralEnabled: true } }).catch(() => {});
       }
 
       return {
@@ -194,22 +240,17 @@ export class MessageCentralService {
     const cfg = await this.loadConfig();
     const otp = String(code || '').trim();
 
-    if (cfg.enabled && (!cfg.customerId || (!cfg.authToken && !cfg.password))) {
+    if (!this.useLive(cfg)) {
+      if (allowStaticOtp() && verificationId === STATIC_VERIFICATION_ID) {
+        if (otp === STATIC_OTP) return { success: true, message: 'OTP verified successfully' };
+        return { success: false, message: `Invalid OTP. Use ${STATIC_OTP}` };
+      }
       return { success: false, message: this.missingKeysMessage() };
     }
 
-    // Static / test path only when Message Central is disabled
-    if (!this.useLive(cfg) || verificationId === STATIC_VERIFICATION_ID) {
-      if (this.useLive(cfg) && verificationId === STATIC_VERIFICATION_ID) {
-        return { success: false, message: 'Invalid verification session. Request a new OTP.' };
-      }
-      if (otp === STATIC_OTP) {
-        return { success: true, message: 'OTP verified successfully' };
-      }
-      return {
-        success: false,
-        message: `Invalid OTP. Use ${STATIC_OTP}`,
-      };
+    // Reject stale static sessions once live is on
+    if (verificationId === STATIC_VERIFICATION_ID) {
+      return { success: false, message: 'Invalid verification session. Request a new OTP.' };
     }
 
     if (!verificationId) {
@@ -221,16 +262,17 @@ export class MessageCentralService {
       const params = new URLSearchParams({
         verificationId: String(verificationId),
         code: otp,
+        customerId: cfg.customerId,
       });
 
-      const doValidate = async (authToken: string) => {
-        const res = await fetch(`${cfg.baseUrl}/verification/v3/validateOtp?${params.toString()}`, {
+      const doValidate = async (authToken: string) =>
+        fetchJson(`${cfg.baseUrl}/verification/v3/validateOtp?${params.toString()}`, {
           method: 'GET',
-          headers: { authToken },
+          headers: {
+            authToken,
+            Accept: 'application/json',
+          },
         });
-        const data: any = await res.json().catch(() => ({}));
-        return { res, data };
-      };
 
       let { res, data } = await doValidate(token);
       if (!cfg.authToken && (res.status === 401 || data?.responseCode === 401)) {
