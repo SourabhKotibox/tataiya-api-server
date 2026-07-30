@@ -2,6 +2,25 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { MovieModel } from '../models/Movie';
 import { logger } from '../lib/logger';
 
+/** Turn S3 keys / relative paths into absolute playable URLs for the web player */
+function toPublicMediaUrl(raw: unknown): string | null {
+  const u = String(raw || '').trim();
+  if (!u || u.startsWith('blob:')) return null;
+  if (/^https?:\/\//i.test(u) || u.startsWith('data:')) {
+    // Old bug: saved as https://tataiya.in/uploads/media/...
+    const m = u.match(/^https?:\/\/(?:www\.)?tataiya\.in\/uploads\/(media\/.+)$/i);
+    if (m) {
+      const s3Base = (process.env.AWS_S3_PUBLIC_BASE_URL || 'https://tatiyatv.s3.eu-north-1.amazonaws.com').replace(/\/$/, '');
+      return `${s3Base}/${m[1]}`;
+    }
+    return u;
+  }
+  const clean = u.replace(/^\/+/, '').replace(/^uploads\//, '');
+  if (!clean) return null;
+  const s3Base = (process.env.AWS_S3_PUBLIC_BASE_URL || 'https://tatiyatv.s3.eu-north-1.amazonaws.com').replace(/\/$/, '');
+  return `${s3Base}/${clean}`;
+}
+
 export const getWebDetail = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
     const { contentId } = request.params as { contentId: string };
@@ -30,34 +49,38 @@ export const getWebDetail = async (request: FastifyRequest, reply: FastifyReply)
     const languageNames = (item.languages || []).map((l: any) => l?.name || l);
 
     // Prefer real HLS master playlist (.m3u8) over progressive MP4 when both exist
-    const candidates = [item.hlsUrl, item.videoUrl, item.sourceVideoUrl].filter(
-      (u: any) => typeof u === 'string' && u.trim() && !u.startsWith('blob:')
-    ) as string[];
+    const candidates = [item.hlsUrl, item.videoUrl, item.sourceVideoUrl]
+      .map((u) => toPublicMediaUrl(u))
+      .filter(Boolean) as string[];
     const hlsUrl =
       candidates.find((u) => /\.m3u8(\?|#|$)/i.test(u)) ||
       candidates[0] ||
       '';
     const qualities: any[] = item.videoQualities || [];
-    const isHlsReady = /\.m3u8(\?|#|$)/i.test(hlsUrl) || qualities.length > 0;
+    const isHlsReady = /\.m3u8(\?|#|$)/i.test(hlsUrl) || qualities.some((q: any) => q?.url);
     const videoSettings = hlsUrl
       ? [
           { key: 'auto', label: 'Auto', description: 'Adjusts quality automatically', url: hlsUrl },
-          ...qualities.map((q: any) => {
-            const sizeMB = q.size ? `${Math.round(q.size / (1024 * 1024))} MB` : null;
-            const qKey = String(q.quality || '');
-            const label =
-              qKey === '4k' || qKey === '2160p' ? '4K' :
-              qKey === '1440p' ? '1440p' :
-              qKey.replace(/p$/i, 'p');
-            return {
-              key: qKey,
-              label,
-              description: sizeMB
-                ? `${label} · ~${sizeMB}`
-                : (q.resolution ? `${label} · ${q.resolution}` : `${label} quality`),
-              url: q.url,
-            };
-          })
+          ...qualities
+            .map((q: any) => {
+              const url = toPublicMediaUrl(q?.url);
+              if (!url) return null;
+              const sizeMB = q.size ? `${Math.round(q.size / (1024 * 1024))} MB` : null;
+              const qKey = String(q.quality || '');
+              const label =
+                qKey === '4k' || qKey === '2160p' ? '4K' :
+                qKey === '1440p' ? '1440p' :
+                qKey.replace(/p$/i, 'p');
+              return {
+                key: qKey,
+                label,
+                description: sizeMB
+                  ? `${label} · ~${sizeMB}`
+                  : (q.resolution ? `${label} · ${q.resolution}` : `${label} quality`),
+                url,
+              };
+            })
+            .filter(Boolean),
         ]
       : null;
 
@@ -112,25 +135,25 @@ export const getWebDetail = async (request: FastifyRequest, reply: FastifyReply)
       languages: languageNames,
       genres: genreNames,
       genresText: genreNames.join(' & '),
-      trailerUrl: item.trailerUrl && !String(item.trailerUrl).startsWith('blob:') ? item.trailerUrl : null,
+      trailerUrl: toPublicMediaUrl(item.trailerUrl),
       videoUrl: hlsUrl || null,
       hlsUrl: hlsUrl || null,
       isHlsReady,
       processingStatus: item.processingStatus || (isHlsReady ? 'ready' : 'queued'),
-      sourceVideoUrl:
-        item.sourceVideoUrl && !String(item.sourceVideoUrl).startsWith('blob:')
-          ? item.sourceVideoUrl
-          : null,
+      sourceVideoUrl: toPublicMediaUrl(item.sourceVideoUrl),
       videoSettings,
       playbackSpeeds,
       subtitles: (item.subtitles || [])
         .filter((s: any) => s?.filePath)
-        .map((s: any) => ({
-          language: s.language?.name || s.language?.code || 'Unknown',
-          code: s.language?.code || 'und',
-          filePath: s.filePath,
-          url: s.filePath,
-        })),
+        .map((s: any) => {
+          const filePath = toPublicMediaUrl(s.filePath) || s.filePath;
+          return {
+            language: s.language?.name || s.language?.code || 'Unknown',
+            code: s.language?.code || 'und',
+            filePath,
+            url: filePath,
+          };
+        }),
       cast,
       directors: crew.filter((c: any) => c.role === 'Director').map((c: any) => c.name),
       crew,
