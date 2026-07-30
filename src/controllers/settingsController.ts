@@ -43,7 +43,7 @@ export const getSettings = async (request: FastifyRequest, reply: FastifyReply) 
         'awsAccessKeyId', 'awsSecretAccessKey', 'awsRegion', 'awsBucket', 'awsPathStyleEndpoint', 'bunnyStorageZone', 'bunnyAccessKey',
         'fcmServerKey', 'fcmSenderId', 'firebaseApiKey', 'firebaseProjectId', 'firebaseAppId',
         'razorpayKeySecret',
-        'messageCentralPassword', 'messageCentralCustomerId', 'messageCentralEmail',
+        'messageCentralPassword', 'messageCentralAuthToken', 'messageCentralCustomerId', 'messageCentralEmail',
       ];
       for (const field of sensitiveFields) {
         delete publicSettings[field];

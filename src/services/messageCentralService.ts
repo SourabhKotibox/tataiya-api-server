@@ -17,6 +17,8 @@ interface MessageCentralConfig {
   customerId: string;
   email: string;
   password: string;
+  /** Paste from console → API Credentials → Auth Token */
+  authToken: string;
   baseUrl: string;
   countryCode: string;
   otpLength: number;
@@ -39,6 +41,7 @@ export class MessageCentralService {
       customerId: String(s?.messageCentralCustomerId || '').trim(),
       email: String(s?.messageCentralEmail || '').trim(),
       password: String(s?.messageCentralPassword || ''),
+      authToken: String(s?.messageCentralAuthToken || '').trim(),
       baseUrl: String(s?.messageCentralBaseUrl || DEFAULT_BASE).replace(/\/$/, ''),
       countryCode: String(s?.messageCentralCountryCode || '91').replace(/^\+/, ''),
       otpLength: otpLen >= 4 && otpLen <= 8 ? otpLen : 4,
@@ -46,13 +49,27 @@ export class MessageCentralService {
     };
   }
 
+  /** Live OTP when enabled + Customer ID + (Auth Token OR password for token API) */
   private useLive(cfg: MessageCentralConfig) {
-    return cfg.enabled && !!cfg.customerId && !!cfg.password;
+    return cfg.enabled && !!cfg.customerId && (!!cfg.authToken || !!cfg.password);
+  }
+
+  private missingKeysMessage() {
+    return 'Message Central is enabled but credentials are incomplete. In Admin → Settings → Message Central, paste Customer ID and Auth Token from console.messagecentral.com (API Credentials).';
   }
 
   private async getAuthToken(cfg: MessageCentralConfig): Promise<string> {
+    // Prefer Auth Token pasted from Message Central console (API Credentials)
+    if (cfg.authToken) {
+      return cfg.authToken;
+    }
+
     if (this.cachedToken && Date.now() < this.tokenExpiresAt) {
       return this.cachedToken;
+    }
+
+    if (!cfg.password) {
+      throw new Error('Message Central Auth Token or Password is required');
     }
 
     const key = Buffer.from(cfg.password, 'utf8').toString('base64');
@@ -86,7 +103,7 @@ export class MessageCentralService {
     return this.cachedToken;
   }
 
-  /** Invalidate cached token (e.g. after 401 from send/validate) */
+  /** Invalidate cached generated token (not the pasted console token) */
   private clearToken() {
     this.cachedToken = null;
     this.tokenExpiresAt = 0;
@@ -96,12 +113,8 @@ export class MessageCentralService {
     const cfg = await this.loadConfig();
     const phone = String(mobileNumber || '').replace(/\D/g, '').slice(-10);
 
-    if (cfg.enabled && (!cfg.customerId || !cfg.password)) {
-      return {
-        success: false,
-        message:
-          'Message Central is enabled but API keys are missing. Add Customer ID and Password in Admin → Settings → Message Central.',
-      };
+    if (cfg.enabled && (!cfg.customerId || (!cfg.authToken && !cfg.password))) {
+      return { success: false, message: this.missingKeysMessage() };
     }
 
     if (!this.useLive(cfg)) {
@@ -132,8 +145,11 @@ export class MessageCentralService {
       };
 
       let { res, data } = await doSend(token);
-      // Retry once with fresh token on auth failure
-      if (res.status === 401 || data?.responseCode === 401 || /token|unauthor/i.test(String(data?.message || ''))) {
+      // Retry once with fresh generated token on auth failure (skip if using pasted console token)
+      if (
+        !cfg.authToken &&
+        (res.status === 401 || data?.responseCode === 401 || /token|unauthor/i.test(String(data?.message || '')))
+      ) {
         this.clearToken();
         token = await this.getAuthToken(cfg);
         ({ res, data } = await doSend(token));
@@ -178,12 +194,8 @@ export class MessageCentralService {
     const cfg = await this.loadConfig();
     const otp = String(code || '').trim();
 
-    if (cfg.enabled && (!cfg.customerId || !cfg.password)) {
-      return {
-        success: false,
-        message:
-          'Message Central is enabled but API keys are missing. Configure them in Admin → Settings → Message Central.',
-      };
+    if (cfg.enabled && (!cfg.customerId || (!cfg.authToken && !cfg.password))) {
+      return { success: false, message: this.missingKeysMessage() };
     }
 
     // Static / test path only when Message Central is disabled
@@ -221,7 +233,7 @@ export class MessageCentralService {
       };
 
       let { res, data } = await doValidate(token);
-      if (res.status === 401 || data?.responseCode === 401) {
+      if (!cfg.authToken && (res.status === 401 || data?.responseCode === 401)) {
         this.clearToken();
         token = await this.getAuthToken(cfg);
         ({ res, data } = await doValidate(token));

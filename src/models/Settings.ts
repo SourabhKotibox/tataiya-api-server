@@ -138,6 +138,8 @@ export interface ISettings extends Document {
   messageCentralCustomerId: string;
   messageCentralEmail: string;
   messageCentralPassword: string;
+  /** JWT from console → API Credentials → Auth Token (preferred) */
+  messageCentralAuthToken: string;
   messageCentralBaseUrl: string;
   messageCentralCountryCode: string;
   messageCentralOtpLength: number;
@@ -280,6 +282,7 @@ const SettingsSchema = new Schema<ISettings>(
     messageCentralCustomerId: { type: String, default: '' },
     messageCentralEmail: { type: String, default: '' },
     messageCentralPassword: { type: String, default: '' },
+    messageCentralAuthToken: { type: String, default: '' },
     messageCentralBaseUrl: { type: String, default: 'https://cpaas.messagecentral.com' },
     messageCentralCountryCode: { type: String, default: '91' },
     messageCentralOtpLength: { type: Number, default: 4 },
