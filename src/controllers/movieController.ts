@@ -152,10 +152,22 @@ export const createMovie = async (request: FastifyRequest, reply: FastifyReply) 
 
     // Any non-HLS video (local OR S3/http MP4) must be transcoded to HLS.
     // ffmpeg reads http(s) URLs directly, so S3 uploads work too.
+    const mainVideo = typeof body.hlsUrl === 'string' ? body.hlsUrl.trim() : '';
+    const trailer = typeof body.trailerUrl === 'string' ? body.trailerUrl.trim() : '';
+    const movieIsTrailer =
+      !!mainVideo &&
+      (/trailer/i.test(mainVideo) || (!!trailer && mainVideo === trailer));
+
+    if (movieIsTrailer) {
+      return reply.status(400).send({
+        success: false,
+        error:
+          'Movie video cannot be the trailer file. Upload/select the full movie MP4 in the Movie Video field, and keep the trailer in Trailer.',
+      });
+    }
+
     const isRawLocalVideo =
-      typeof body.hlsUrl === 'string' &&
-      body.hlsUrl.trim() &&
-      !/\.m3u8(\?|#|$)/i.test(body.hlsUrl);
+      !!mainVideo && !/\.m3u8(\?|#|$)/i.test(mainVideo);
     if (isRawLocalVideo) {
       body.processingStatus = 'queued';
     } else {
@@ -163,8 +175,6 @@ export const createMovie = async (request: FastifyRequest, reply: FastifyReply) 
     }
 
     // Keep full-movie progressive source separate from trailer (offline downloads use this)
-    const mainVideo = typeof body.hlsUrl === 'string' ? body.hlsUrl.trim() : '';
-    const trailer = typeof body.trailerUrl === 'string' ? body.trailerUrl.trim() : '';
     if (mainVideo && !mainVideo.startsWith('blob:') && mainVideo !== trailer && !mainVideo.includes('.m3u8')) {
       body.sourceVideoUrl = mainVideo;
       body.videoUrl = mainVideo;
@@ -235,11 +245,24 @@ export const updateMovie = async (request: FastifyRequest, reply: FastifyReply) 
     }
 
     // Any changed non-HLS video (local OR S3/http MP4) must be transcoded to HLS
+    const mainVideo = typeof body.hlsUrl === 'string' ? body.hlsUrl.trim() : '';
+    const trailer = typeof body.trailerUrl === 'string' ? body.trailerUrl.trim() : String((existingMovie as any).trailerUrl || '');
+    const movieIsTrailer =
+      !!mainVideo &&
+      (/trailer/i.test(mainVideo) || (!!trailer && mainVideo === trailer));
+
+    if (movieIsTrailer) {
+      return reply.status(400).send({
+        success: false,
+        error:
+          'Movie video cannot be the trailer file. Upload/select the full movie MP4 in the Movie Video field, and keep the trailer in Trailer.',
+      });
+    }
+
     const isRawLocalVideo =
-      typeof body.hlsUrl === 'string' &&
-      body.hlsUrl.trim() &&
-      !/\.m3u8(\?|#|$)/i.test(body.hlsUrl) &&
-      body.hlsUrl !== (existingMovie as any).hlsUrl;
+      !!mainVideo &&
+      !/\.m3u8(\?|#|$)/i.test(mainVideo) &&
+      mainVideo !== (existingMovie as any).hlsUrl;
     if (isRawLocalVideo) {
       body.processingStatus = 'queued';
     } else if (body.hlsUrl) {
@@ -247,8 +270,6 @@ export const updateMovie = async (request: FastifyRequest, reply: FastifyReply) 
     }
 
     // Keep full-movie progressive source separate from trailer
-    const mainVideo = typeof body.hlsUrl === 'string' ? body.hlsUrl.trim() : '';
-    const trailer = typeof body.trailerUrl === 'string' ? body.trailerUrl.trim() : String((existingMovie as any).trailerUrl || '');
     if (mainVideo && !mainVideo.startsWith('blob:') && mainVideo !== trailer && !mainVideo.includes('.m3u8')) {
       body.sourceVideoUrl = mainVideo;
       body.videoUrl = mainVideo;
