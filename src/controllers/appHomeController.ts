@@ -52,12 +52,17 @@ const getAuthData = async (
           .sort({ endDate: -1 })
           .lean();
         if (liveSub) {
-          userPlan = normalizePlanKey(liveSub.plan) || 'standard';
+          const livePlan = normalizePlanKey(liveSub.plan);
+          if (livePlan !== 'free') {
+            userPlan = livePlan;
+          } else {
+            userPlan = 'free';
+          }
         } else {
           const user = await UserModel.findById(userId)
             .select('subscriptionPlan subscriptionStatus subscriptionExpiry')
             .lean();
-          const plan = String(user?.subscriptionPlan || 'free').toLowerCase();
+          const plan = normalizePlanKey(user?.subscriptionPlan);
           const isActive =
             user?.subscriptionStatus === 'active' &&
             plan !== 'free' &&
@@ -78,8 +83,8 @@ const mapContentItem = (
   isLikedByUser = false,
   userPlan = 'free',
 ) => {
-  const contentPlan = item.planRequired || item.plan || 'free';
-  const isLocked = String(userPlan || 'free').toLowerCase() === 'free';
+  const contentPlanRaw = item.planRequired || item.plan || 'free';
+  const isLocked = normalizePlanKey(userPlan) === 'free';
   return {
   id: item._id.toString(),
   title: item.title,
@@ -108,7 +113,7 @@ const mapContentItem = (
   updatedAt: item.updatedAt,
   videoUrl: resolveUrl(item.hlsUrl || null),
   trailerUrl: resolveUrl(item.trailerUrl || null),
-  contentPlan: String(contentPlan).toLowerCase() === 'free' ? 'standard' : contentPlan,
+  contentPlan: normalizePlanKey(contentPlanRaw) === 'free' ? 'standard' : contentPlanRaw,
   isLocked,
   };
 };

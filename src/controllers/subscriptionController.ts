@@ -22,7 +22,8 @@ export const normalizePlanKey = (
   name?: string | null
 ): 'free' | 'basic' | 'standard' | 'premium' => {
   const n = String(name || 'free').toLowerCase().trim();
-  if (!n || n === 'free') return 'free';
+  // Treat any free-tier label as free (e.g. "Free", "Free Plan", "free trial")
+  if (!n || n === 'free' || /\bfree\b/.test(n)) return 'free';
   if (n.includes('premium') || n.includes('vip')) return 'premium';
   if (n.includes('standard')) return 'standard';
   if (n.includes('basic')) return 'basic';

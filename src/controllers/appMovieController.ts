@@ -68,17 +68,22 @@ const getOptionalUser = async (request: FastifyRequest): Promise<{ userId: strin
       .lean();
 
     if (liveSub) {
-      return { userId, userPlan: normalizePlanKey(liveSub.plan) || 'standard' };
+      const livePlan = normalizePlanKey(liveSub.plan);
+      // Free-tier subscription rows must not unlock content
+      if (livePlan !== 'free') return { userId, userPlan: livePlan };
     }
 
-    const user = await UserModel.findById(userId).select('subscriptionPlan subscriptionStatus subscriptionExpiry').lean();
+    const user = await UserModel.findById(userId)
+      .select('subscriptionPlan subscriptionStatus subscriptionExpiry')
+      .lean();
     if (!user) return { userId, userPlan: 'free' };
 
-    const plan = normalizePlan(user.subscriptionPlan);
+    const plan = normalizePlanKey(user.subscriptionPlan);
     const isActive =
       user.subscriptionStatus === 'active' &&
       plan !== 'free' &&
       (!user.subscriptionExpiry || user.subscriptionExpiry > new Date());
+    // subscriptionPlan "free" (or inactive) → always free for lock checks
     return { userId, userPlan: isActive ? plan : 'free' };
   } catch {
     return null;
@@ -215,8 +220,8 @@ export const getMovieDetail = async (request: FastifyRequest, reply: FastifyRepl
     );
 
     const planRequired = normalizePlan(movie.planRequired);
-    // Unsubscribed / free users are locked (app paywall). Paid plan unlocks.
-    const contentLocked = normalizePlan(userPlan) === 'free';
+    // Free / unsubscribed users → locked. Only an active paid plan unlocks.
+    const contentLocked = normalizePlanKey(userPlan) === 'free';
 
     const videoSettings = hlsUrl
       ? [
@@ -232,6 +237,7 @@ export const getMovieDetail = async (request: FastifyRequest, reply: FastifyRepl
             const sizeMB = q.size ? `${Math.round(q.size / (1024 * 1024))} MB` : null;
             const label = QUALITY_LABELS[q.quality] || q.quality;
             const requiredPlan = QUALITY_PLAN_GATE[q.quality] || 'free';
+            // Always mirror content lock for free users (app may check quality rows)
             const isLocked = contentLocked || isPlanLocked(userPlan, requiredPlan);
             const description = q.quality === '144p' ? 'Very low quality — for slow connections' :
                                 q.quality === '240p' ? 'Low quality — saves data' :
