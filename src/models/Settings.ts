@@ -133,6 +133,15 @@ export interface ISettings extends Document {
   razorpayEnabled: boolean;
   razorpayKeyId: string;
   razorpayKeySecret: string;
+  // Message Central (SMS OTP) — used by web + app phone login
+  messageCentralEnabled: boolean;
+  messageCentralCustomerId: string;
+  messageCentralEmail: string;
+  messageCentralPassword: string;
+  messageCentralBaseUrl: string;
+  messageCentralCountryCode: string;
+  messageCentralOtpLength: number;
+  messageCentralFlowType: string;
 }
 
 const SettingsSchema = new Schema<ISettings>(
@@ -266,6 +275,15 @@ const SettingsSchema = new Schema<ISettings>(
     razorpayEnabled: { type: Boolean, default: false },
     razorpayKeyId: { type: String, default: '' },
     razorpayKeySecret: { type: String, default: '' },
+    // Message Central (SMS OTP)
+    messageCentralEnabled: { type: Boolean, default: false },
+    messageCentralCustomerId: { type: String, default: '' },
+    messageCentralEmail: { type: String, default: '' },
+    messageCentralPassword: { type: String, default: '' },
+    messageCentralBaseUrl: { type: String, default: 'https://cpaas.messagecentral.com' },
+    messageCentralCountryCode: { type: String, default: '91' },
+    messageCentralOtpLength: { type: Number, default: 4 },
+    messageCentralFlowType: { type: String, default: 'SMS' },
   },
   { timestamps: true }
 );
