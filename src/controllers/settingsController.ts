@@ -13,46 +13,71 @@ async function getOrCreateSettings() {
 export const getSettings = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
     const settings = await getOrCreateSettings();
-    
-    // Check if requester is an admin with settings view permission
+    const raw = settings.toObject ? settings.toObject() : { ...(settings as any) };
+
+    // Check if requester is an admin who may see secrets
     let isAdmin = false;
     try {
       await request.jwtVerify();
       const decodedUser = request.user as { id: string; role: string };
       if (decodedUser?.id) {
-        const { checkUserPermission } = await import('../middlewares/rbac');
-        const permResult = await checkUserPermission(decodedUser.id, 'settings', 'canView');
-        if (permResult.allowed) {
+        // Admin / superadmin JWT always gets secrets in Settings UI
+        if (decodedUser.role === 'admin' || decodedUser.role === 'superadmin') {
           isAdmin = true;
+        } else {
+          const { checkUserPermission } = await import('../middlewares/rbac');
+          const view = await checkUserPermission(decodedUser.id, 'settings', 'canView');
+          const edit = view.allowed
+            ? view
+            : await checkUserPermission(decodedUser.id, 'settings', 'canEdit');
+          if (edit.allowed) isAdmin = true;
         }
       }
     } catch {
       // Not logged in or not an admin
     }
 
+    // Always expose non-secret status flags (safe for public + admin UI)
+    const statusFlags = {
+      messageCentralEnabled: !!raw.messageCentralEnabled,
+      messageCentralBaseUrl: raw.messageCentralBaseUrl || 'https://cpaas.messagecentral.com',
+      messageCentralCountryCode: raw.messageCentralCountryCode || '91',
+      messageCentralOtpLength: raw.messageCentralOtpLength ?? 4,
+      messageCentralFlowType: raw.messageCentralFlowType || 'SMS',
+      messageCentralHasCustomerId: !!String(raw.messageCentralCustomerId || '').trim(),
+      messageCentralHasAuthToken: !!String(raw.messageCentralAuthToken || '').trim(),
+      messageCentralHasPassword: !!String(raw.messageCentralPassword || '').trim(),
+      messageCentralHasEmail: !!String(raw.messageCentralEmail || '').trim(),
+    };
+
     if (isAdmin) {
       return reply.send({
         success: true,
-        data: settings
-      });
-    } else {
-      // Filter out sensitive fields for public settings
-      const publicSettings = settings.toObject ? settings.toObject() : { ...settings };
-      const sensitiveFields = [
-        'mailEmail', 'mailDriver', 'mailHost', 'mailPort', 'mailEncryption', 'mailUsername', 'mailPassword', 'mailFrom', 'mailFromName',
-        'awsAccessKeyId', 'awsSecretAccessKey', 'awsRegion', 'awsBucket', 'awsPathStyleEndpoint', 'bunnyStorageZone', 'bunnyAccessKey',
-        'fcmServerKey', 'fcmSenderId', 'firebaseApiKey', 'firebaseProjectId', 'firebaseAppId',
-        'razorpayKeySecret',
-        'messageCentralPassword', 'messageCentralAuthToken', 'messageCentralCustomerId', 'messageCentralEmail',
-      ];
-      for (const field of sensitiveFields) {
-        delete publicSettings[field];
-      }
-      return reply.send({
-        success: true,
-        data: publicSettings
+        data: {
+          ...raw,
+          ...statusFlags,
+        },
       });
     }
+
+    const publicSettings = { ...raw };
+    const sensitiveFields = [
+      'mailEmail', 'mailDriver', 'mailHost', 'mailPort', 'mailEncryption', 'mailUsername', 'mailPassword', 'mailFrom', 'mailFromName',
+      'awsAccessKeyId', 'awsSecretAccessKey', 'awsRegion', 'awsBucket', 'awsPathStyleEndpoint', 'bunnyStorageZone', 'bunnyAccessKey',
+      'fcmServerKey', 'fcmSenderId', 'firebaseApiKey', 'firebaseProjectId', 'firebaseAppId',
+      'razorpayKeySecret',
+      'messageCentralPassword', 'messageCentralAuthToken', 'messageCentralCustomerId', 'messageCentralEmail',
+    ];
+    for (const field of sensitiveFields) {
+      delete publicSettings[field];
+    }
+    return reply.send({
+      success: true,
+      data: {
+        ...publicSettings,
+        ...statusFlags,
+      },
+    });
   } catch (error: any) {
     console.error(error);
     return reply.status(500).send({ success: false, error: error.message });
@@ -90,9 +115,16 @@ export const updateSettings = async (request: FastifyRequest, reply: FastifyRepl
       updateEnvFile(envUpdates);
     }
 
+    const raw = settings.toObject ? settings.toObject() : { ...(settings as any) };
     return reply.send({
       success: true,
-      data: settings
+      data: {
+        ...raw,
+        messageCentralHasCustomerId: !!String(raw.messageCentralCustomerId || '').trim(),
+        messageCentralHasAuthToken: !!String(raw.messageCentralAuthToken || '').trim(),
+        messageCentralHasPassword: !!String(raw.messageCentralPassword || '').trim(),
+        messageCentralHasEmail: !!String(raw.messageCentralEmail || '').trim(),
+      },
     });
   } catch (error: any) {
     console.error(error);
