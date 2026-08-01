@@ -1,8 +1,8 @@
 {
   "info": {
-    "_postman_id": "tataiya-app-api-collection",
-    "name": "Tataiya App API",
-    "description": "Mobile app (Flutter) API collection for Tataiya.\n\nBase URL: https://tataiya.in  (or http://localhost:3000)\nAuth header: Authorization: Bearer {{accessToken}}\n\nAfter login/OTP, copy accessToken into the collection variable.",
+    "_postman_id": "tataiya-web-api-collection",
+    "name": "Tataiya Web API",
+    "description": "Website frontend API collection for Tataiya.\n\nBase URL: https://tataiya.in  (or http://localhost:3000)\nAuth header: Authorization: Bearer {{accessToken}} (same app user JWT from /api/app/auth/*)\n\nWeb-specific routes use /api/web-* and /api/web/*; profile/wishlist/auth reuse /api/app/*.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -18,7 +18,7 @@
   "item": [
     {
       "name": "Auth",
-      "description": "Email/OTP/social login \u2014 used by both app and website",
+      "description": "Email/OTP/social login — used by both app and website",
       "item": [
         {
           "name": "Send OTP",
@@ -43,7 +43,7 @@
                 "send-otp"
               ]
             },
-            "description": "Send OTP via Message Central (Admin Settings keys). Returns verificationId.",
+            "description": "Send 4-digit OTP to mobile number",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"mobileNumber\": \"9876543210\"\n}",
@@ -79,7 +79,7 @@
                 "verify-otp"
               ]
             },
-            "description": "Verify Message Central OTP (pass verificationId from send-otp) and receive accessToken",
+            "description": "Verify OTP and receive accessToken",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"mobileNumber\": \"9876543210\",\n  \"otp\": \"1234\",\n  \"verificationId\": \"\",\n  \"deviceId\": \"device-1\",\n  \"deviceName\": \"iPhone\"\n}",
@@ -421,11 +421,11 @@
       ]
     },
     {
-      "name": "Home & Discovery",
-      "description": "Mobile home / explore / search",
+      "name": "Web Home & Browse",
+      "description": "Website-specific aggregated endpoints",
       "item": [
         {
-          "name": "Home Layout",
+          "name": "Web Home",
           "request": {
             "method": "GET",
             "header": [
@@ -436,39 +436,13 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/home",
+              "raw": "{{baseUrl}}/api/web-home",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "api",
-                "home"
-              ]
-            },
-            "description": "Sections only (no banners)"
-          },
-          "response": []
-        },
-        {
-          "name": "App Banners",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/banners",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app",
-                "banners"
+                "web-home"
               ]
             },
             "description": ""
@@ -476,7 +450,7 @@
           "response": []
         },
         {
-          "name": "Explore Feed",
+          "name": "Web All Content",
           "request": {
             "method": "GET",
             "header": [
@@ -487,29 +461,62 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/explore?offset=0&limit=5&sort=new&seenIds=",
+              "raw": "{{baseUrl}}/api/web-all-content",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "api",
-                "explore"
+                "web-all-content"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Web Browse",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/web-browse?type=movie&genre=&page=1&limit=20&search=&section=",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "web-browse"
               ],
               "query": [
                 {
-                  "key": "offset",
-                  "value": "0"
+                  "key": "type",
+                  "value": "movie"
+                },
+                {
+                  "key": "genre",
+                  "value": ""
+                },
+                {
+                  "key": "page",
+                  "value": "1"
                 },
                 {
                   "key": "limit",
-                  "value": "5"
+                  "value": "20"
                 },
                 {
-                  "key": "sort",
-                  "value": "new"
+                  "key": "search",
+                  "value": ""
                 },
                 {
-                  "key": "seenIds",
+                  "key": "section",
                   "value": ""
                 }
               ]
@@ -519,7 +526,33 @@
           "response": []
         },
         {
-          "name": "Search",
+          "name": "Web Detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/web-detail/:contentId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "web-detail",
+                ":contentId"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Search (shared)",
           "request": {
             "method": "GET",
             "header": [
@@ -550,7 +583,105 @@
           "response": []
         },
         {
-          "name": "Movie Detail",
+          "name": "Watch (shared)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/watch/:contentId",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "watch",
+                ":contentId"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Downloads (Web)",
+      "description": "Web downloads — separate from app gate",
+      "item": [
+        {
+          "name": "List Subscription Plans (public)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/web/subscription-plans",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "web",
+                "subscription-plans"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Request Download",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/web/download",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "web",
+                "download"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contentId\": \"<movieId>\",\n  \"contentType\": \"movie\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "List Downloads",
           "request": {
             "method": "GET",
             "header": [
@@ -566,143 +697,60 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/app/movies/:id",
+              "raw": "{{baseUrl}}/api/web/downloads",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "api",
-                "app",
-                "movies",
+                "web",
+                "downloads"
+              ]
+            },
+            "description": ""
+          },
+          "response": []
+        },
+        {
+          "name": "Remove Download",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{accessToken}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/web/downloads/:id",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "web",
+                "downloads",
                 ":id"
               ]
             },
-            "description": "Auth optional for like state"
-          },
-          "response": []
-        },
-        {
-          "name": "App Settings",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app-settings",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app-settings"
-              ]
-            },
             "description": ""
-          },
-          "response": []
-        },
-        {
-          "name": "Home Tabs",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app-settings/home-tabs",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app-settings",
-                "home-tabs"
-              ]
-            },
-            "description": ""
-          },
-          "response": []
-        },
-        {
-          "name": "App Ads",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/ads",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app",
-                "ads"
-              ]
-            },
-            "description": ""
-          },
-          "response": []
-        },
-        {
-          "name": "Ad Interaction",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/ads/:id/interaction",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app",
-                "ads",
-                ":id",
-                "interaction"
-              ]
-            },
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"type\": \"click\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
           },
           "response": []
         }
       ]
     },
     {
-      "name": "Profile & Account",
-      "description": "",
+      "name": "Account (Web)",
+      "description": "Website end-user account",
       "item": [
         {
-          "name": "Get Profile",
+          "name": "Get Profile (shared)",
           "request": {
             "method": "GET",
             "header": [
@@ -733,7 +781,7 @@
           "response": []
         },
         {
-          "name": "Update Profile",
+          "name": "Update Profile (shared)",
           "request": {
             "method": "PATCH",
             "header": [
@@ -762,7 +810,7 @@
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"John Updated\",\n  \"email\": \"john.updated@example.com\",\n  \"phone\": \"9876543210\",\n  \"avatar\": \"\"\n}",
+              "raw": "{\n  \"name\": \"John Updated\",\n  \"email\": \"john.updated@example.com\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -773,46 +821,9 @@
           "response": []
         },
         {
-          "name": "Upload Avatar",
+          "name": "Delete Account (web alias)",
           "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "body": {
-              "mode": "formdata",
-              "formdata": [
-                {
-                  "key": "avatar",
-                  "type": "file",
-                  "src": []
-                }
-              ]
-            },
-            "url": {
-              "raw": "{{baseUrl}}/api/app/profile/avatar",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app",
-                "profile",
-                "avatar"
-              ]
-            },
-            "description": "multipart/form-data field: avatar"
-          },
-          "response": []
-        },
-        {
-          "name": "Update Video Quality",
-          "request": {
-            "method": "PUT",
+            "method": "DELETE",
             "header": [
               {
                 "key": "Content-Type",
@@ -826,68 +837,17 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/app/profile/video-quality",
+              "raw": "{{baseUrl}}/api/web/account",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "api",
-                "app",
-                "profile",
-                "video-quality"
+                "web",
+                "account"
               ]
             },
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"quality\": \"1080p\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "Update Language Preference",
-          "request": {
-            "method": "PUT",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              },
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/profile/language",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app",
-                "profile",
-                "language"
-              ]
-            },
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"languageId\": \"<languageId>\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
+            "description": ""
           },
           "response": []
         },
@@ -921,410 +881,15 @@
             "description": ""
           },
           "response": []
-        },
-        {
-          "name": "Delete Account (legacy)",
-          "request": {
-            "method": "DELETE",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              },
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/profile",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app",
-                "profile"
-              ]
-            },
-            "description": ""
-          },
-          "response": []
-        },
-        {
-          "name": "List Devices",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              },
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/devices",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app",
-                "devices"
-              ]
-            },
-            "description": ""
-          },
-          "response": []
-        },
-        {
-          "name": "Remove Device",
-          "request": {
-            "method": "DELETE",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              },
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/devices/:deviceId",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app",
-                "devices",
-                ":deviceId"
-              ]
-            },
-            "description": ""
-          },
-          "response": []
-        },
-        {
-          "name": "List Profiles",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              },
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/profiles",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app",
-                "profiles"
-              ]
-            },
-            "description": ""
-          },
-          "response": []
-        },
-        {
-          "name": "Create Profile",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              },
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/profiles",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app",
-                "profiles"
-              ]
-            },
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"name\": \"Kids\",\n  \"isKids\": true,\n  \"avatar\": \"\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "Update Profile Slot",
-          "request": {
-            "method": "PUT",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              },
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/profiles/:profileId",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app",
-                "profiles",
-                ":profileId"
-              ]
-            },
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"name\": \"Kids Updated\",\n  \"avatar\": \"\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "Delete Profile Slot",
-          "request": {
-            "method": "DELETE",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              },
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/profiles/:profileId",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app",
-                "profiles",
-                ":profileId"
-              ]
-            },
-            "description": ""
-          },
-          "response": []
         }
       ]
     },
     {
-      "name": "Downloads (App)",
-      "description": "Offline downloads — authorize progressive MP4 URL, list, update progress, delete. Requires Bearer token + plan with downloadStatus enabled.",
-      "item": [
-        {
-          "name": "Check Download Eligibility",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/download/check?contentId=<movieId>",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "app", "download", "check"],
-              "query": [
-                { "key": "contentId", "value": "<movieId>" }
-              ]
-            },
-            "description": "Returns canDownload, downloadEnabled, hasOfflineFile, limits, qualities."
-          },
-          "response": []
-        },
-        {
-          "name": "Request Download",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              },
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/download",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "app", "download"]
-            },
-            "description": "Authorizes offline download. Response includes downloadUrl (progressive MP4). App must save file locally.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"contentId\": \"<movieId>\",\n  \"contentType\": \"movie\",\n  \"quality\": \"720p\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "List Downloads",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/downloads",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "app", "downloads"]
-            },
-            "description": ""
-          },
-          "response": []
-        },
-        {
-          "name": "Update Download Status",
-          "request": {
-            "method": "PATCH",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              },
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/downloads/:id",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "app", "downloads", ":id"]
-            },
-            "description": "Client reports local download progress after caching the file.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"status\": \"completed\",\n  \"progress\": 100,\n  \"fileSize\": 524288000\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": []
-        },
-        {
-          "name": "Remove Download",
-          "request": {
-            "method": "DELETE",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/downloads/:id",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "app", "downloads", ":id"]
-            },
-            "description": ""
-          },
-          "response": []
-        },
-        {
-          "name": "Remove All Downloads",
-          "request": {
-            "method": "DELETE",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/downloads",
-              "host": ["{{baseUrl}}"],
-              "path": ["api", "app", "downloads"]
-            },
-            "description": ""
-          },
-          "response": []
-        }
-      ]
-    },
-    {
-      "name": "Watch Progress & History",
+      "name": "Profile extras used by web",
       "description": "",
       "item": [
         {
-          "name": "Get Progress Item",
+          "name": "Get Wishlist",
           "request": {
             "method": "GET",
             "header": [
@@ -1337,29 +902,17 @@
                 "key": "Authorization",
                 "value": "Bearer {{accessToken}}",
                 "type": "text"
-              },
-              {
-                "key": "x-profile-id",
-                "value": "",
-                "type": "text"
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/app/watch/progress?contentId=<movieId>",
+              "raw": "{{baseUrl}}/api/app/wishlist",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "api",
                 "app",
-                "watch",
-                "progress"
-              ],
-              "query": [
-                {
-                  "key": "contentId",
-                  "value": "<movieId>"
-                }
+                "wishlist"
               ]
             },
             "description": ""
@@ -1367,7 +920,7 @@
           "response": []
         },
         {
-          "name": "Save Progress",
+          "name": "Save Watch Progress",
           "request": {
             "method": "POST",
             "header": [
@@ -1379,11 +932,6 @@
               {
                 "key": "Authorization",
                 "value": "Bearer {{accessToken}}",
-                "type": "text"
-              },
-              {
-                "key": "x-profile-id",
-                "value": "",
                 "type": "text"
               }
             ],
@@ -1412,143 +960,6 @@
           },
           "response": []
         },
-        {
-          "name": "Clear Progress",
-          "request": {
-            "method": "DELETE",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              },
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/watch/progress/:contentId",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app",
-                "watch",
-                "progress",
-                ":contentId"
-              ]
-            },
-            "description": ""
-          },
-          "response": []
-        },
-        {
-          "name": "Watch History",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              },
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/watch/history",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app",
-                "watch",
-                "history"
-              ]
-            },
-            "description": ""
-          },
-          "response": []
-        },
-        {
-          "name": "Delete History Item",
-          "request": {
-            "method": "DELETE",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              },
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/watch/history/:id",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app",
-                "watch",
-                "history",
-                ":id"
-              ]
-            },
-            "description": ""
-          },
-          "response": []
-        },
-        {
-          "name": "Clear All History",
-          "request": {
-            "method": "DELETE",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              },
-              {
-                "key": "Authorization",
-                "value": "Bearer {{accessToken}}",
-                "type": "text"
-              }
-            ],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/watch/history/all",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app",
-                "watch",
-                "history",
-                "all"
-              ]
-            },
-            "description": ""
-          },
-          "response": []
-        }
-      ]
-    },
-    {
-      "name": "Notifications (App)",
-      "description": "",
-      "item": [
         {
           "name": "My Notifications",
           "request": {
@@ -1915,7 +1326,7 @@
     },
     {
       "name": "Engagement",
-      "description": "Likes, views, wishlist, reviews \u2014 Bearer required where noted",
+      "description": "Likes, views, wishlist, reviews — Bearer required where noted",
       "item": [
         {
           "name": "Toggle Like",
@@ -2204,32 +1615,6 @@
               ]
             },
             "description": ""
-          },
-          "response": []
-        }
-      ]
-    },
-    {
-      "name": "Subscription Plans",
-      "description": "Public plan list for the mobile app (no auth). Use plan id with Razorpay order.",
-      "item": [
-        {
-          "name": "List Plans",
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{baseUrl}}/api/app/subscription-plans",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "api",
-                "app",
-                "subscription-plans"
-              ]
-            },
-            "description": "Active plans from admin (name, price, limits). Alias: GET /api/app/plans"
           },
           "response": []
         }

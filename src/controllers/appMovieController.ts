@@ -11,6 +11,7 @@ import { logger } from '../lib/logger';
 import { buildShareUrl } from '../lib/config';
 import { QUALITY_LABELS, QUALITY_PLAN_GATE } from './watchController';
 import { normalizePlanKey } from './subscriptionController';
+import { resolveDownloadLimits } from './downloadController';
 
 const PLAN_LEVELS: Record<string, number> = {
   free: 0,
@@ -268,7 +269,44 @@ export const getMovieDetail = async (request: FastifyRequest, reply: FastifyRepl
         }))
       : null;
 
-    // ── 7. Build response ─────────────────────────────────────────────────────
+    // ── 7. Offline download eligibility (for app Download button) ─────────────
+    const downloadAllowed = (movie as any).downloadAllowed !== false;
+    const looksTrailer = (u: string) => {
+      const n = String(u || '').toLowerCase();
+      const t = String((movie as any).trailerUrl || '').toLowerCase();
+      if (!n || n.startsWith('blob:')) return true;
+      if (t && (n === t || n.split('/').pop() === t.split('/').pop())) return true;
+      return /(\/|^)(trailer|teaser|preview)s?([\/._-]|$)/i.test(n);
+    };
+    const progressiveOk = (u?: string | null) => {
+      const s = String(u || '').trim();
+      return !!(s && !s.includes('.m3u8') && !looksTrailer(s));
+    };
+    const hasOfflineFile =
+      progressiveOk((movie as any).sourceVideoUrl) ||
+      progressiveOk((movie as any).videoUrl) ||
+      ((movie as any).videoQualities || []).some((q: any) => progressiveOk(q?.url)) ||
+      progressiveOk((movie as any).hlsUrl);
+
+    let downloadEnabled = false;
+    let downloadLimit = 0;
+    let downloadUsed = 0;
+    let canDownload = false;
+    if (userId) {
+      const limits = await resolveDownloadLimits(userId);
+      downloadEnabled = limits.allowed;
+      downloadLimit = limits.max;
+      downloadUsed = await UserDownloadModel.countDocuments({
+        userId: new mongoose.Types.ObjectId(userId),
+      });
+      canDownload =
+        limits.allowed &&
+        downloadAllowed &&
+        hasOfflineFile &&
+        (isDownloaded || downloadUsed < limits.max);
+    }
+
+    // ── 8. Build response ─────────────────────────────────────────────────────
     const genreNames = (movie.genres as any[]).map((g: any) => g?.name || g);
     const languageNames = (movie.languages as any[]).map((l: any) => l?.name || l);
 
@@ -332,6 +370,14 @@ export const getMovieDetail = async (request: FastifyRequest, reply: FastifyRepl
         watchProgress,
         downloaded,
         isDownloaded,
+
+        // Offline download — app should show Download (not Coming Soon) when canDownload
+        downloadAllowed,
+        downloadEnabled,
+        canDownload,
+        hasOfflineFile,
+        downloadLimit,
+        downloadUsed,
 
         // Share
         shareUrl: buildShareUrl(movie._id.toString()),

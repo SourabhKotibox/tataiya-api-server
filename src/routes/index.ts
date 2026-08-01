@@ -45,6 +45,7 @@ import { getWebHome, getWebAllContent } from '../controllers/webHomeController';
 import { getWebBrowse } from '../controllers/webBrowseController';
 import { getWebDetail } from '../controllers/webDetailController';
 import { getMovieDetail } from '../controllers/appMovieController';
+import { checkForceUpdate } from '../controllers/appForceUpdateController';
 import adRoutes from './ad';
 import adminNotificationsRoutes from './adminNotifications';
 import reviewRoutes from './review';
@@ -117,6 +118,13 @@ const router: FastifyPluginAsync = async (fastify) => {
 
   // Mobile movie detail page
   fastify.get('/app/movies/:id', getMovieDetail);
+
+  // Force / optional app update check (public — call on app launch)
+  fastify.get('/app/force-update', checkForceUpdate);
+  fastify.post('/app/force-update', checkForceUpdate);
+  // Aliases
+  fastify.get('/app/version-check', checkForceUpdate);
+  fastify.post('/app/version-check', checkForceUpdate);
 
   // Home page route for app (layout/sections only — no banners)
   fastify.get('/home', getHomePage);

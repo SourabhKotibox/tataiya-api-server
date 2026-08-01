@@ -1,26 +1,42 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { requestDownload, getDownloadsList, removeDownload, removeAllDownloads } from '../controllers/downloadController';
+import {
+  requestDownload,
+  getDownloadsList,
+  removeDownload,
+  removeAllDownloads,
+  checkDownloadEligibility,
+  updateDownloadStatus,
+} from '../controllers/downloadController';
 
 const downloadRoutes: FastifyPluginAsync = async (fastify) => {
-  // Requires authentication
   fastify.addHook('onRequest', async (request, reply) => {
     try {
       await request.jwtVerify();
     } catch (err) {
-      reply.send(err);
+      return reply.status(401).send({ success: false, message: 'Unauthorized' });
     }
   });
 
-  // POST /api/app/download - Request download authorization
+  // Check if user can download a title (before starting)
+  // GET /api/app/download/check?contentId=
+  fastify.get('/download/check', checkDownloadEligibility);
+
+  // Authorize offline download + return progressive MP4 URL
+  // POST /api/app/download  body: { contentId, quality? }
   fastify.post('/download', requestDownload);
 
-  // GET /api/app/downloads - Get user's active downloads list
+  // List user's downloads
+  // GET /api/app/downloads
   fastify.get('/downloads', getDownloadsList);
 
-  // DELETE /api/app/downloads - Remove ALL user's downloads at once
+  // Client reports local download progress/status
+  // PATCH /api/app/downloads/:id  body: { status, progress, fileSize?, quality? }
+  fastify.patch('/downloads/:id', updateDownloadStatus);
+
+  // Remove all
   fastify.delete('/downloads', removeAllDownloads);
 
-  // DELETE /api/app/downloads/:id - Remove a download log
+  // Remove one (or :id=all)
   fastify.delete('/downloads/:id', removeDownload);
 };
 
