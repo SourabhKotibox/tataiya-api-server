@@ -151,7 +151,7 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
     if (targetLanguageId) {
       langFilter.languages = targetLanguageId;
     }
-    const rawContents: any[] = await MovieModel.find(langFilter)
+    let rawContents: any[] = await MovieModel.find(langFilter)
       .sort(sortBy)
       .skip(offset)
       .limit(fetchLimit)
@@ -160,9 +160,26 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
       .lean();
 
     logger.info(
-      { offset, limit, fetchLimit, raw: rawContents.length },
+      { offset, limit, fetchLimit, raw: rawContents.length, hasLanguageFilter: !!targetLanguageId },
       'Explore API raw fetch',
     );
+
+    // If no movies found with language filter, try without it
+    if (rawContents.length === 0 && targetLanguageId) {
+      logger.info('No movies found with language filter, fetching all languages');
+      rawContents = await MovieModel.find(filter)
+        .sort(sortBy)
+        .skip(offset)
+        .limit(fetchLimit)
+        .populate('languages', 'name')
+        .populate('genres', 'name')
+        .lean();
+      
+      logger.info(
+        { offset, limit, fetchLimit, raw: rawContents.length },
+        'Explore API raw fetch (no language filter)',
+      );
+    }
 
     // ── Deduplicate: remove items with same thumbnail OR same videoUrl ────────
     const seenThumbnails = new Set<string>();
