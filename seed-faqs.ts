@@ -61,13 +61,13 @@ const FAQS = [
   {
     question: 'Video keeps buffering — what should I do?',
     answer:
-      'Check your connection, lower player quality, close other apps or tabs, and try again. If the issue continues, email support@tataiya.in.',
+      'Check your connection, lower player quality, close other apps or tabs, and try again. If the issue continues, email tataiyafun@gmail.com or call 7852051118.',
     order: 9,
   },
   {
     question: 'How do I contact support?',
     answer:
-      'Email support@tataiya.in. For underage access concerns use safety@tataiya.in. Billing questions: billing@tataiya.in.',
+      'Email tataiyafun@gmail.com or call 7852051118. For underage access concerns use the same email with subject "Underage Access". Billing questions: tataiyafun@gmail.com.',
     order: 10,
   },
 ];

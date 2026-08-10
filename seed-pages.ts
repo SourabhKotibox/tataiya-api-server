@@ -69,7 +69,7 @@ const PAGES: PageSeed[] = [
 <p>We retain account and usage data while your account is active and for a reasonable period afterward for legal, security, and accounting purposes. We use industry-standard safeguards (encryption in transit, access controls). No method of transmission or storage is 100% secure.</p>
 
 <h2>8. Your Rights</h2>
-<p>Subject to applicable Indian law, you may request access, correction, or deletion of your personal data, or close your account. Contact <strong>privacy@tataiya.in</strong>. We may need to verify your identity before fulfilling requests.</p>
+<p>Subject to applicable Indian law, you may request access, correction, or deletion of your personal data, or close your account. Contact <strong>tataiyafun@gmail.com</strong>. We may need to verify your identity before fulfilling requests.</p>
 
 <h2>9. International Processing</h2>
 <p>Your data may be processed on servers in India or other regions used by our infrastructure providers, with appropriate safeguards.</p>
@@ -78,7 +78,7 @@ const PAGES: PageSeed[] = [
 <p>We may update this policy from time to time. The "Last updated" date will change when we do. Continued use of Tataiya after changes means you accept the updated policy.</p>
 
 <h2>Contact</h2>
-<p>Privacy questions: <strong>privacy@tataiya.in</strong><br/>Support: <strong>support@tataiya.in</strong><br/>Website: <strong>https://tataiya.in</strong></p>`,
+<p>Privacy questions: <strong>tataiyafun@gmail.com</strong><br/>Support: <strong>tataiyafun@gmail.com</strong><br/>Website: <strong>https://tataiya.in</strong></p>`,
   },
   {
     title: 'Terms and Conditions',
@@ -100,7 +100,7 @@ const PAGES: PageSeed[] = [
 <ul>
   <li>Keep your login credentials confidential. You are responsible for activity under your account.</li>
   <li>Do not share, sell, or rent your account.</li>
-  <li>Notify us immediately of unauthorized access at support@tataiya.in.</li>
+  <li>Notify us immediately of unauthorized access at tataiyafun@gmail.com.</li>
 </ul>
 
 <h2>4. Subscriptions &amp; Billing</h2>
@@ -134,7 +134,7 @@ const PAGES: PageSeed[] = [
 <p>These Terms are governed by the laws of India. Courts in India shall have exclusive jurisdiction, subject to mandatory consumer protections that may apply.</p>
 
 <h2>Contact</h2>
-<p>Legal: <strong>legal@tataiya.in</strong> · Support: <strong>support@tataiya.in</strong></p>`,
+<p>Legal: <strong>tataiyafun@gmail.com</strong> · Support: <strong>tataiyafun@gmail.com</strong></p>`,
   },
   {
     title: 'Age Limits',
@@ -179,7 +179,7 @@ const PAGES: PageSeed[] = [
 <p>Adult content laws vary by country and state. You must only use Tataiya where you are legally allowed to view 18+ material. You are responsible for complying with local law.</p>
 
 <h2>6. Reporting Underage Access</h2>
-<p>If you believe a minor has an account or is accessing Tataiya, email <strong>safety@tataiya.in</strong> with details. We will investigate and take appropriate action, including account deletion.</p>
+<p>If you believe a minor has an account or is accessing Tataiya, email <strong>tataiyafun@gmail.com</strong> with details. We will investigate and take appropriate action, including account deletion.</p>
 
 <h2>Related Policies</h2>
 <ul>
@@ -253,7 +253,7 @@ const PAGES: PageSeed[] = [
 <h2>Liability</h2>
 <p>Your use of Tataiya is at your own risk. To the maximum extent permitted by law, Tataiya disclaims liability for damages arising from viewing decisions, account misuse, or service interruptions.</p>
 
-<p>Questions: <strong>legal@tataiya.in</strong></p>`,
+<p>Questions: <strong>tataiyafun@gmail.com</strong></p>`,
   },
   {
     title: 'About Us',
@@ -276,7 +276,7 @@ const PAGES: PageSeed[] = [
 <p>We respect that adult entertainment is for consenting adults. We invest in safety policies, privacy, and a catalogue that stays within legal and ethical bounds while delivering entertainment that feels premium.</p>
 
 <h2>Contact</h2>
-<p>Hello: <strong>hello@tataiya.in</strong><br/>Support: <strong>support@tataiya.in</strong><br/>Web: <strong>https://tataiya.in</strong></p>`,
+<p>Hello: <strong>tataiyafun@gmail.com</strong><br/>Support: <strong>tataiyafun@gmail.com</strong><br/>Web: <strong>https://tataiya.in</strong></p>`,
   },
   {
     title: 'Contact Us',
@@ -289,31 +289,31 @@ const PAGES: PageSeed[] = [
 
 <h2>Customer Support</h2>
 <ul>
-  <li><strong>Email:</strong> support@tataiya.in</li>
+  <li><strong>Email:</strong> tataiyafun@gmail.com</li>
   <li><strong>Typical response:</strong> within 24 hours on business days</li>
 </ul>
 
 <h2>Billing &amp; Refunds</h2>
 <ul>
-  <li><strong>Email:</strong> billing@tataiya.in</li>
+  <li><strong>Email:</strong> tataiyafun@gmail.com</li>
   <li>Also see our <a href="/page/refund-policy">Refund Policy</a></li>
 </ul>
 
 <h2>Privacy</h2>
 <ul>
-  <li><strong>Email:</strong> privacy@tataiya.in</li>
+  <li><strong>Email:</strong> tataiyafun@gmail.com</li>
   <li><a href="/page/privacy-policy">Privacy Policy</a></li>
 </ul>
 
 <h2>Safety &amp; Underage Reports</h2>
 <ul>
-  <li><strong>Email:</strong> safety@tataiya.in</li>
+  <li><strong>Email:</strong> tataiyafun@gmail.com</li>
   <li><a href="/page/age-limits">Age Limits</a></li>
 </ul>
 
 <h2>Legal &amp; Content</h2>
 <ul>
-  <li><strong>Legal:</strong> legal@tataiya.in</li>
+  <li><strong>Legal:</strong> tataiyafun@gmail.com</li>
   <li><strong>Content reports:</strong> content@tataiya.in</li>
 </ul>
 
@@ -347,7 +347,7 @@ const PAGES: PageSeed[] = [
 <p>You can block or delete cookies in your browser settings. Blocking essential cookies may break login or playback.</p>
 
 <h2>Contact</h2>
-<p><strong>privacy@tataiya.in</strong></p>`,
+<p><strong>tataiyafun@gmail.com</strong></p>`,
   },
   {
     title: 'Help Center',
@@ -384,7 +384,7 @@ const PAGES: PageSeed[] = [
 <p>Where enabled for your plan, use the download option in the app/site for offline personal viewing only.</p>
 
 <h2>Still need help?</h2>
-<p>Email <strong>support@tataiya.in</strong> or visit <a href="/page/contact">Contact Us</a>.</p>`,
+<p>Email <strong>tataiyafun@gmail.com</strong> or visit <a href="/page/contact">Contact Us</a>.</p>`,
   },
   {
     title: 'Refund Policy',
@@ -401,14 +401,14 @@ const PAGES: PageSeed[] = [
 
 <h2>Exceptions</h2>
 <ul>
-  <li><strong>Unauthorized charges:</strong> Contact billing@tataiya.in immediately. Confirmed fraud may receive a full refund.</li>
+  <li><strong>Unauthorized charges:</strong> Contact tataiyafun@gmail.com immediately. Confirmed fraud may receive a full refund.</li>
   <li><strong>Extended outage:</strong> If a platform-wide failure prevents streaming for several consecutive days, we may offer credit at our discretion.</li>
   <li><strong>Duplicate charges:</strong> Verified duplicate payments will be refunded or credited.</li>
 </ul>
 
 <h2>How to Request</h2>
 <ol>
-  <li>Email <strong>billing@tataiya.in</strong> with your account email and reason</li>
+  <li>Email <strong>tataiyafun@gmail.com</strong> with your account email and reason</li>
   <li>We review within about 3 business days</li>
   <li>Approved refunds return to the original payment method in 5–7 business days (processor dependent)</li>
 </ol>
@@ -416,7 +416,7 @@ const PAGES: PageSeed[] = [
 <h2>Cancellations</h2>
 <p>Cancel anytime to stop the next renewal. Cancellation does not automatically refund the current period.</p>
 
-<p>Support: <strong>support@tataiya.in</strong></p>`,
+<p>Support: <strong>tataiyafun@gmail.com</strong></p>`,
   },
 ];
 

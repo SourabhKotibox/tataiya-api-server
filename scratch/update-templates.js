@@ -36,11 +36,11 @@ async function run() {
   // 1. Update Settings document
   console.log('Updating settings document...');
   const settingsUpdate = {
-    platformName: 'Triple Minds',
-    copyrightText: '© 2026 Triple Minds. All Rights Reserved.',
-    mailFromName: 'Triple Minds',
-    mailFrom: 'info@tripleminds.com',
-    mailEmail: 'info@tripleminds.com'
+    platformName: 'Tataiya',
+    copyrightText: '© 2026 Tataiya. All Rights Reserved.',
+    mailFromName: 'Tataiya',
+    mailFrom: 'tataiyafun@gmail.com',
+    mailEmail: 'tataiyafun@gmail.com'
   };
   
   const settingsResult = await SettingsModel.findOneAndUpdate(

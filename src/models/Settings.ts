@@ -149,11 +149,11 @@ export interface ISettings extends Document {
 const SettingsSchema = new Schema<ISettings>(
   {
     // Business
-    platformName: { type: String, default: 'Triple Minds' },
-    contactNo: { type: String, default: '' },
-    inquiryEmail: { type: String, default: '' },
+    platformName: { type: String, default: 'Tataiya' },
+    contactNo: { type: String, default: '7852051118' },
+    inquiryEmail: { type: String, default: 'tataiyafun@gmail.com' },
     siteDescription: { type: String, default: '' },
-    copyrightText: { type: String, default: '© 2026 Triple Minds. All Rights Reserved.' },
+    copyrightText: { type: String, default: '© 2026 Tataiya. All Rights Reserved.' },
     facebookUrl: { type: String, default: '' },
     twitterUrl: { type: String, default: '' },
     instagramUrl: { type: String, default: '' },
@@ -175,8 +175,8 @@ const SettingsSchema = new Schema<ISettings>(
     mailEncryption: { type: String, default: 'tls' },
     mailUsername: { type: String, default: '' },
     mailPassword: { type: String, default: '' },
-    mailFrom: { type: String, default: 'info@tripleminds.com' },
-    mailFromName: { type: String, default: 'Triple Minds' },
+    mailFrom: { type: String, default: 'tataiyafun@gmail.com' },
+    mailFromName: { type: String, default: 'Tataiya' },
     // Storage — default S3; switch to local anytime in admin settings
     storageDriver: { type: String, enum: ['local', 's3'], default: 's3' },
     awsAccessKeyId: { type: String, default: '' },

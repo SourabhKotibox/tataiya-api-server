@@ -36,7 +36,7 @@ export const handleShareRedirect = async (request: FastifyRequest, reply: Fastif
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Opening Xoto...</title>
+      <title>Opening Tataiya...</title>
       <style>
         body { background: #000; color: #fff; font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
         .loader { border: 4px solid #333; border-top: 4px solid #ff0055; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }

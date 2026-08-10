@@ -360,7 +360,7 @@ async function seedBanners() {
   const banners = [
     {
       _id: new mongoose.Types.ObjectId('6a3387222e358a4c3dec1111'),
-      title: 'Welcome to Kotibox OTT',
+      title: 'Welcome to Tataiya',
       subtitle: 'Stream the best content',
       description: 'Watch thousands of shows and movies',
       imageUrl: 'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=1200&h=600&fit=crop&q=80',
@@ -379,7 +379,7 @@ async function seedBanners() {
     {
       _id: new mongoose.Types.ObjectId('6a3387222e358a4c3dec1114'),
       title: 'The Dark Knight Legacy',
-      subtitle: 'StreamVault Original',
+      subtitle: 'Tataiya Original',
       description: 'Watch now',
       imageUrl: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=1200&h=600&fit=crop&q=80',
       mobileImageUrl: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&h=400&fit=crop&q=80',
@@ -446,10 +446,10 @@ async function seedNotificationTemplates() {
       status: true,
       notifSubject: 'Welcome! Your account is ready',
       notifTemplate: 'Hello [[ user_name ]], welcome! Your account has been created successfully.',
-      emailSubject: 'Welcome to StreamVault 🎬',
+      emailSubject: 'Welcome to Tataiya 🎬',
       emailTemplate:
         `<p style="margin:0 0 16px;">Hello <strong>[[ user_name ]]</strong>,</p>` +
-        `<p style="margin:0 0 16px;">Welcome to <strong>StreamVault</strong>! Your account has been created successfully.</p>` +
+        `<p style="margin:0 0 16px;">Welcome to <strong>Tataiya</strong>! Your account has been created successfully.</p>` +
         `<p style="margin:0 0 24px;color:#6b7280;">You can now sign in and start exploring thousands of movies, TV shows, and more.</p>` +
         `<div style="text-align:center;margin:28px 0;">` +
         `<a href="[[ site_url ]]" style="background:linear-gradient(135deg,#ef4444 0%,#dc2626 100%);color:#fff;padding:13px 36px;text-decoration:none;border-radius:6px;font-weight:700;font-size:15px;display:inline-block;">Start Watching</a>` +
@@ -771,8 +771,8 @@ async function seedNotifications() {
 
   const notifications = [
     {
-      title: 'Welcome to StreamVault',
-      body: 'Thank you for joining StreamVault! Start exploring our vast library of movies and TV shows.',
+      title: 'Welcome to Tataiya',
+      body: 'Thank you for joining Tataiya! Start exploring our vast library of movies and TV shows.',
       type: 'system' as const,
       targetAudience: 'all' as const,
       status: 'sent' as const,
@@ -951,9 +951,9 @@ async function seedPages() {
       status: 'published' as const,
       order: 3,
       content: `<h1>About Us</h1>
-<p>Welcome to Kotibox OTT — your premier destination for unlimited entertainment.</p>
+<p>Welcome to Tataiya — your premier destination for unlimited entertainment.</p>
 <h2>Our Story</h2>
-<p>Kotibox OTT was founded with a singular mission: to bring the best in entertainment to every screen, everywhere. We believe that great storytelling has the power to connect people, inspire imagination, and transcend boundaries.</p>
+<p>Tataiya was founded with a singular mission: to bring the best in entertainment to every screen, everywhere. We believe that great storytelling has the power to connect people, inspire imagination, and transcend boundaries.</p>
 <p>Starting as a small team of passionate content lovers, we've grown into a full-scale streaming platform offering thousands of movies, TV shows, short dramas, and exclusive originals.</p>
 <h2>What We Offer</h2>
 <ul>
@@ -967,7 +967,7 @@ async function seedPages() {
 <h2>Technology</h2>
 <p>We leverage cutting-edge streaming technology to deliver smooth, high-definition video on any device — smartphones, tablets, smart TVs, and web browsers. Our adaptive streaming ensures the best possible quality regardless of your connection speed.</p>
 <h2>Our Team</h2>
-<p>Behind Kotibox OTT is a dedicated team of engineers, designers, content curators, and entertainment enthusiasts working tirelessly to bring you the best viewing experience possible.</p>
+<p>Behind Tataiya is a dedicated team of engineers, designers, content curators, and entertainment enthusiasts working tirelessly to bring you the best viewing experience possible.</p>
 <h2>Get in Touch</h2>
 <p>We'd love to hear from you! Reach us at <strong>hello@kotiboxott.com</strong></p>`,
     },
@@ -1005,8 +1005,8 @@ async function seedPages() {
 <p>Follow us for the latest news, releases, and updates:</p>
 <ul>
   <li>Instagram: @kotiboxott</li>
-  <li>YouTube: Kotibox OTT</li>
-  <li>Facebook: Kotibox OTT Official</li>
+  <li>YouTube: Tataiya</li>
+  <li>Facebook: Tataiya Official</li>
 </ul>`,
     },
     {

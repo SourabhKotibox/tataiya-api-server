@@ -52,7 +52,7 @@ const FAQS_TO_SEED = [
   },
   {
     question: "How do I contact customer support?",
-    answer: "If your issue isn't covered in these FAQs, feel free to email our customer support team directly at support@tripleminds.com or initiate a live chat.",
+    answer: "If your issue isn't covered in these FAQs, feel free to email our customer support team directly at tataiyafun@gmail.com or call us at 7852051118.",
     status: true
   }
 ];

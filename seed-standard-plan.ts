@@ -8,39 +8,29 @@ async function main() {
   const db = mongoose.connection.db!;
   console.log('db:', db.databaseName);
 
-  // Keep only Standard @ ₹30 / month
-  await db.collection('subscriptionplans').updateOne(
-    { name: 'Standard' },
-    {
-      $set: {
-        name: 'Standard',
-        duration: 'Month',
-        durationValue: 1,
-        price: 30,
-        discount: 0,
-        totalPrice: 30,
-        status: true,
-        description: 'Full access to Tataiya movies — Standard plan at ₹30/month.',
-        level: 1,
-        updatedAt: new Date(),
+  const plans = [
+    { name: 'Basic', duration: 'Month', durationValue: 1, price: 30, discount: 0, totalPrice: 30, status: true, description: 'Basic plan — ₹30 for 1 month.', level: 1 },
+    { name: 'Standard', duration: 'Months', durationValue: 3, price: 78, discount: 10, totalPrice: 78, status: true, description: 'Standard plan — ₹78 for 3 months.', level: 2 },
+    { name: 'Premium', duration: 'Months', durationValue: 6, price: 150, discount: 17, totalPrice: 150, status: true, description: 'Premium plan — ₹150 for 6 months.', level: 3 },
+    { name: 'VIP', duration: 'Months', durationValue: 12, price: 300, discount: 25, totalPrice: 300, status: true, description: 'VIP plan — ₹300 for 12 months.', level: 4 },
+  ];
+
+  for (const p of plans) {
+    await db.collection('subscriptionplans').updateOne(
+      { name: p.name },
+      {
+        $set: {
+          ...p,
+          updatedAt: new Date(),
+        },
+        $setOnInsert: { createdAt: new Date() },
       },
-      $setOnInsert: { createdAt: new Date() },
-    },
-    { upsert: true }
-  );
+      { upsert: true }
+    );
+  }
 
-  console.log('Upserted Standard plan @ ₹30 / 1 Month');
+  console.log('Upserted 4 plans: Basic ₹30/1mo, Standard ₹78/3mo, Premium ₹150/6mo, VIP ₹300/12mo');
 
-  // Disable / remove every other plan
-  const result = await db.collection('subscriptionplans').updateMany(
-    { name: { $ne: 'Standard' } },
-    { $set: { status: false, updatedAt: new Date() } }
-  );
-  const deleted = await db.collection('subscriptionplans').deleteMany({
-    name: { $ne: 'Standard' },
-  });
-
-  // Fix banner image URLs that are bare S3 keys
   const s3Base = 'https://tatiyatv.s3.eu-north-1.amazonaws.com/';
   const banners = await db.collection('banners').find({}).toArray();
   let fixedBanners = 0;
@@ -63,12 +53,8 @@ async function main() {
     }
   }
 
-  const plans = await db.collection('subscriptionplans').find({}).toArray();
-  console.log(
-    'plans now:',
-    plans.map((p) => ({ name: p.name, price: p.price, totalPrice: p.totalPrice, status: p.status }))
-  );
-  console.log('other plans disabled:', result.modifiedCount, 'deleted:', deleted.deletedCount);
+  const allPlans = await db.collection('subscriptionplans').find({}).toArray();
+  console.log('plans now:', allPlans.map((p: any) => ({ name: p.name, price: p.price, totalPrice: p.totalPrice, status: p.status })));
   console.log('banners fixed:', fixedBanners);
 
   await mongoose.disconnect();

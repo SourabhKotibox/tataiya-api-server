@@ -404,8 +404,8 @@ export const getAppProfile = async (request: FastifyRequest, reply: FastifyReply
 
     // Fetch platform/contact info from settings
     const dbSettings = await SettingsModel.findOne().lean();
-    const platformName = dbSettings?.platformName || 'Triple Minds';
-    const contactEmail = dbSettings?.mailFrom || dbSettings?.mailEmail || 'support@tripleminds.com';
+    const platformName = dbSettings?.platformName || 'Tataiya';
+    const contactEmail = dbSettings?.mailFrom || dbSettings?.mailEmail || 'tataiyafun@gmail.com';
     const shareAppText = `Watch amazing movies on ${platformName}!`;
 
 
