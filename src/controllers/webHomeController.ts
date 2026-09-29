@@ -73,7 +73,7 @@ const mapContentItem = (item: any, isHero = false) => {
     hlsUrl: resolveMediaUrl(item.hlsUrl || item.videoUrl || '') || null,
     videoUrl: resolveMediaUrl(item.videoUrl || item.hlsUrl || '') || null,
     planRequired: item.planRequired || 'free',
-    isPremium: item.planRequired && item.planRequired !== 'free',
+    isPremium: !!item.planRequired && String(item.planRequired).toLowerCase() !== 'free',
     trending: !!item.trending,
     isNewContent: !!item.isNewContent,
     views: item.views || 0,
@@ -142,7 +142,7 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
               hlsUrl: resolveMediaUrl(content.hlsUrl || content.videoUrl || '') || null,
               videoUrl: resolveMediaUrl(content.videoUrl || content.hlsUrl || '') || null,
               planRequired: content.planRequired || 'free',
-              isPremium: content.planRequired && content.planRequired !== 'free',
+              isPremium: !!content.planRequired && String(content.planRequired).toLowerCase() !== 'free',
               isBanner: true,
             };
           } else {

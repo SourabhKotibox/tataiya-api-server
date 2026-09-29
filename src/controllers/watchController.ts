@@ -192,7 +192,8 @@ export const getWatchData = async (request: FastifyRequest, reply: FastifyReply)
       return reply.status(404).send({ success: false, message: 'Content not found.' });
     }
 
-    const contentPlan = content.planRequired || 'free';
+    const contentPlan = String(content.planRequired || 'free').toLowerCase();
+    const isFree = !contentPlan || contentPlan === 'free';
 
     // ── Like / Wishlist / Download Status ─────────────────────────────────
     let isLikedByUser = false;
@@ -243,7 +244,7 @@ export const getWatchData = async (request: FastifyRequest, reply: FastifyReply)
     }
 
     // ── Movie Playback ────────────────────────────────────────────────────
-    const isAccessible = canAccessItem(contentPlan === 'free', contentPlan !== 'free', contentPlan, userPlan);
+    const isAccessible = canAccessItem(isFree, !isFree, contentPlan, userPlan);
 
     let watchProgress = null;
     if (userObjectId) {

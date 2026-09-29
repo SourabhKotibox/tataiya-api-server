@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import fs from 'fs';
 import path from 'path';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -8,6 +8,51 @@ import { SettingsModel } from '../models/Settings';
 
 export async function getS3Settings() {
   const settings = await SettingsModel.findOne().lean();
+  const storageDriver =
+    (settings as any)?.storageDriver ||
+    process.env.STORAGE_DRIVER ||
+    's3';
+
+  if (storageDriver === 'spaces') {
+    const accessKeyId =
+      (settings as any)?.doAccessKey ||
+      process.env.DO_SPACES_ACCESS_KEY ||
+      process.env.DO_SPACES_KEY ||
+      '';
+    const secretAccessKey =
+      (settings as any)?.doSecretKey ||
+      process.env.DO_SPACES_SECRET_KEY ||
+      process.env.DO_SPACES_SECRET ||
+      '';
+    const region =
+      (settings as any)?.doRegion ||
+      process.env.DO_SPACES_REGION ||
+      'nyc3';
+    const bucket =
+      (settings as any)?.doSpaceName ||
+      process.env.DO_SPACES_NAME ||
+      process.env.DO_SPACES_BUCKET ||
+      '';
+    const endpoint =
+      (settings as any)?.doEndpoint ||
+      process.env.DO_SPACES_ENDPOINT ||
+      `https://${region}.digitaloceanspaces.com`;
+    const cdnUrl =
+      ((settings as any)?.doCdnUrl || process.env.DO_SPACES_CDN_URL || '').replace(/\/$/, '');
+
+    return {
+      accessKeyId,
+      secretAccessKey,
+      region,
+      bucket,
+      endpoint,
+      pathStyle: false,
+      storageDriver: 'spaces' as const,
+      cdnUrl,
+    };
+  }
+
+  // Standard AWS S3 settings (preserved completely)
   const accessKeyId =
     (settings as any)?.awsAccessKeyId ||
     process.env.AWS_S3_ACCESS_KEY_ID ||
@@ -29,10 +74,6 @@ export async function getS3Settings() {
     process.env.AWS_BUCKET_NAME ||
     'tataiya-ott';
   const pathStyle = !!(settings as any)?.awsPathStyleEndpoint;
-  const storageDriver =
-    (settings as any)?.storageDriver ||
-    process.env.STORAGE_DRIVER ||
-    's3';
   const cdnUrl =
     ((settings as any)?.awsCdnUrl || process.env.AWS_S3_PUBLIC_BASE_URL || '').replace(/\/$/, '');
 
@@ -41,16 +82,35 @@ export async function getS3Settings() {
     secretAccessKey,
     region,
     bucket,
+    endpoint: undefined as string | undefined,
     pathStyle,
-    storageDriver,
+    storageDriver: storageDriver as 'local' | 's3' | 'spaces',
     cdnUrl,
   };
 }
 
 export async function getS3Client() {
   const settings = await getS3Settings();
+
+  if (settings.storageDriver === 'spaces') {
+    const endpoint =
+      settings.endpoint || `https://${settings.region}.digitaloceanspaces.com`;
+    return new S3Client({
+      region: 'us-east-1',
+      endpoint,
+      credentials: {
+        accessKeyId: settings.accessKeyId,
+        secretAccessKey: settings.secretAccessKey,
+      },
+      forcePathStyle: false,
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
+    } as any);
+  }
+
   return new S3Client({
     region: settings.region,
+    ...(settings.endpoint ? { endpoint: settings.endpoint } : {}),
     credentials: {
       accessKeyId: settings.accessKeyId,
       secretAccessKey: settings.secretAccessKey,
@@ -66,6 +126,14 @@ export async function getS3Client() {
 function buildPublicUrl(settings: Awaited<ReturnType<typeof getS3Settings>>, key: string): string {
   const cleanKey = key.replace(/^\/+/, '').replace(/^uploads\//, '');
   if (settings.cdnUrl) return `${settings.cdnUrl}/${cleanKey}`;
+
+  if (settings.storageDriver === 'spaces') {
+    const endpointHost = settings.endpoint
+      ? settings.endpoint.replace(/^https?:\/\//, '').replace(/\/$/, '')
+      : `${settings.region}.digitaloceanspaces.com`;
+    return `https://${settings.bucket}.${endpointHost}/${cleanKey}`;
+  }
+
   if (settings.pathStyle) {
     return `https://s3.${settings.region}.amazonaws.com/${settings.bucket}/${cleanKey}`;
   }
@@ -85,7 +153,7 @@ export async function generatePresignedUrl(
 ): Promise<PresignedUrlResult> {
   const settings = await getS3Settings();
 
-  if (!settings.accessKeyId || !settings.secretAccessKey || settings.storageDriver !== 's3') {
+  if (!settings.accessKeyId || !settings.secretAccessKey || (settings.storageDriver !== 's3' && settings.storageDriver !== 'spaces')) {
     return {
       uploadUrl: `https://mock-storage.local/upload/${key}?token=dev-placeholder`,
       publicUrl: `https://mock-storage.local/${key}`,
@@ -120,8 +188,8 @@ export async function uploadToS3(
 ): Promise<string> {
   const settings = await getS3Settings();
 
-  if (!settings.accessKeyId || !settings.secretAccessKey || settings.storageDriver !== 's3') {
-    throw new Error('AWS S3 credentials not configured or storage driver is not s3');
+  if (!settings.accessKeyId || !settings.secretAccessKey || (settings.storageDriver !== 's3' && settings.storageDriver !== 'spaces')) {
+    throw new Error('Remote storage credentials not configured or storage driver is not s3/spaces');
   }
 
   const s3Client = await getS3Client();
@@ -131,6 +199,7 @@ export async function uploadToS3(
       Key: key,
       Body: body as any,
       ContentType: contentType,
+      ...(settings.storageDriver === 'spaces' ? { ACL: 'public-read' } : {}),
     })
   );
   return buildPublicUrl(settings, key);
@@ -145,7 +214,7 @@ export async function downloadFromS3ToFile(s3Key: string, destPath: string): Pro
       Key: s3Key.replace(/^\/+/, ''),
     })
   );
-  if (!response.Body) throw new Error('No response body from S3');
+  if (!response.Body) throw new Error('No response body from remote storage');
 
   await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
   const body = response.Body as Readable;
@@ -173,7 +242,7 @@ export async function downloadS3RangeToFile(
       Range: `bytes=0-${Math.max(0, maxBytes - 1)}`,
     })
   );
-  if (!response.Body) throw new Error('No response body from S3 range get');
+  if (!response.Body) throw new Error('No response body from remote storage range get');
 
   await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
   const body = response.Body as Readable;
@@ -188,7 +257,7 @@ export async function downloadS3RangeToFile(
 
 export async function deleteFromS3(key: string): Promise<void> {
   const settings = await getS3Settings();
-  if (!settings.accessKeyId || !settings.secretAccessKey || settings.storageDriver !== 's3') {
+  if (!settings.accessKeyId || !settings.secretAccessKey || (settings.storageDriver !== 's3' && settings.storageDriver !== 'spaces')) {
     return;
   }
   const s3Client = await getS3Client();
@@ -202,11 +271,12 @@ export async function deleteFromS3(key: string): Promise<void> {
 
 export async function isS3Configured(): Promise<boolean> {
   const settings = await getS3Settings();
-  const hasCreds = !!(settings.accessKeyId && settings.secretAccessKey);
+  const hasCreds = !!(settings.accessKeyId && settings.secretAccessKey && settings.bucket);
   const notPlaceholder =
     settings.accessKeyId !== 'your-access-key-id' &&
     settings.secretAccessKey !== 'your-secret-access-key';
-  return hasCreds && notPlaceholder && settings.storageDriver === 's3';
+  const isRemote = settings.storageDriver === 's3' || settings.storageDriver === 'spaces';
+  return hasCreds && notPlaceholder && isRemote;
 }
 
 export async function getS3PublicUrl(key: string): Promise<string> {
@@ -218,6 +288,12 @@ export async function getS3PublicUrl(key: string): Promise<string> {
 export async function getHlsPublicBaseUrl(): Promise<string> {
   const settings = await getS3Settings();
   if (settings.cdnUrl) return settings.cdnUrl;
+  if (settings.storageDriver === 'spaces') {
+    const endpointHost = settings.endpoint
+      ? settings.endpoint.replace(/^https?:\/\//, '').replace(/\/$/, '')
+      : `${settings.region}.digitaloceanspaces.com`;
+    return `https://${settings.bucket}.${endpointHost}`;
+  }
   if (settings.pathStyle) {
     return `https://s3.${settings.region}.amazonaws.com/${settings.bucket}`;
   }
@@ -226,8 +302,8 @@ export async function getHlsPublicBaseUrl(): Promise<string> {
 
 export async function uploadHlsFolderToS3(localFolderPath: string, s3Prefix: string): Promise<number> {
   const settings = await getS3Settings();
-  if (!settings.accessKeyId || !settings.secretAccessKey || settings.storageDriver !== 's3') {
-    throw new Error('S3 is not configured — cannot upload HLS folder');
+  if (!settings.accessKeyId || !settings.secretAccessKey || (settings.storageDriver !== 's3' && settings.storageDriver !== 'spaces')) {
+    throw new Error('Remote storage is not configured — cannot upload HLS folder');
   }
 
   const s3Client = await getS3Client();
@@ -258,6 +334,7 @@ export async function uploadHlsFolderToS3(localFolderPath: string, s3Prefix: str
               Body: body,
               ContentType: getContentType(entry.name),
               CacheControl: ext === '.m3u8' ? 'no-cache' : 'max-age=31536000',
+              ...(settings.storageDriver === 'spaces' ? { ACL: 'public-read' } : {}),
             })
           );
           uploadCount++;
@@ -267,7 +344,7 @@ export async function uploadHlsFolderToS3(localFolderPath: string, s3Prefix: str
   };
 
   await uploadDir(localFolderPath, s3Prefix.replace(/\/$/, ''));
-  logger.info({ s3Prefix, uploadCount }, 'HLS folder uploaded to S3');
+  logger.info({ s3Prefix, uploadCount }, 'HLS folder uploaded to remote storage');
   return uploadCount;
 }
 
@@ -283,7 +360,101 @@ export async function getS3ObjectSize(key: string): Promise<number> {
     );
     return Number(head.ContentLength) || 0;
   } catch (err) {
-    logger.warn({ err, key: cleanKey }, 'S3 HeadObject failed');
+    logger.warn({ err, key: cleanKey }, 'HeadObject failed');
     return 0;
   }
 }
+
+/** Test connectivity to AWS S3 or DigitalOcean Spaces */
+export async function testStorageConnection(config?: {
+  driver?: 's3' | 'spaces';
+  spaceName?: string;
+  region?: string;
+  endpoint?: string;
+  accessKey?: string;
+  secretKey?: string;
+  bucket?: string;
+  pathStyle?: boolean;
+}): Promise<{ success: boolean; message?: string; error?: string }> {
+  let savedSettings: any = null;
+  try {
+    const mongoose = await import('mongoose');
+    if (mongoose.default.connection.readyState === 1) {
+      savedSettings = await SettingsModel.findOne().lean();
+    }
+  } catch {
+    savedSettings = null;
+  }
+  const driver = config?.driver || (savedSettings as any)?.storageDriver || 'spaces';
+  let client: S3Client;
+  let bucketName: string;
+
+  if (driver === 'spaces') {
+    const spaceName = config?.spaceName?.trim() || (savedSettings as any)?.doSpaceName || process.env.DO_SPACES_NAME || process.env.DO_SPACES_BUCKET || '';
+    const accessKey = config?.accessKey?.trim() || (savedSettings as any)?.doAccessKey || process.env.DO_SPACES_ACCESS_KEY || process.env.DO_SPACES_KEY || '';
+    const secretKey = config?.secretKey?.trim() || (savedSettings as any)?.doSecretKey || process.env.DO_SPACES_SECRET_KEY || process.env.DO_SPACES_SECRET || '';
+    const region = config?.region?.trim() || (savedSettings as any)?.doRegion || process.env.DO_SPACES_REGION || 'nyc3';
+    const endpoint = config?.endpoint?.trim() || (savedSettings as any)?.doEndpoint || process.env.DO_SPACES_ENDPOINT || `https://${region}.digitaloceanspaces.com`;
+
+    if (!spaceName || !accessKey || !secretKey) {
+      return {
+        success: false,
+        error: 'Missing required credentials: Space Name, Access Key, and Secret Key are required.',
+      };
+    }
+
+    bucketName = spaceName;
+    client = new S3Client({
+      endpoint,
+      region: 'us-east-1',
+      credentials: { accessKeyId: accessKey, secretAccessKey: secretKey },
+      forcePathStyle: false,
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
+    } as any);
+  } else {
+    const bucket = config?.bucket?.trim() || (savedSettings as any)?.awsBucket || process.env.AWS_S3_BUCKET_NAME || '';
+    const accessKey = config?.accessKey?.trim() || (savedSettings as any)?.awsAccessKeyId || process.env.AWS_S3_ACCESS_KEY_ID || '';
+    const secretKey = config?.secretKey?.trim() || (savedSettings as any)?.awsSecretAccessKey || process.env.AWS_S3_SECRET_ACCESS_KEY || '';
+    const region = config?.region?.trim() || (savedSettings as any)?.awsRegion || process.env.AWS_S3_REGION || 'us-east-1';
+    const pathStyle = config?.pathStyle !== undefined ? !!config.pathStyle : !!(savedSettings as any)?.awsPathStyleEndpoint;
+
+    if (!bucket || !accessKey || !secretKey) {
+      return {
+        success: false,
+        error: 'Missing required credentials: S3 Bucket Name, Access Key ID, and Secret Access Key are required.',
+      };
+    }
+
+    bucketName = bucket;
+    client = new S3Client({
+      region,
+      credentials: { accessKeyId: accessKey, secretAccessKey: secretKey },
+      ...(pathStyle ? { forcePathStyle: true } : {}),
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
+    } as any);
+  }
+
+  try {
+    await client.send(new ListObjectsV2Command({ Bucket: bucketName, MaxKeys: 1 }));
+    return {
+      success: true,
+      message: `Successfully connected to ${driver === 'spaces' ? 'DigitalOcean Space' : 'AWS S3 bucket'} "${bucketName}".`,
+    };
+  } catch (err: any) {
+    logger.error({ err, driver, bucket: bucketName }, 'Storage connection test failed');
+    let errMsg = err?.message || 'Failed to connect to storage provider';
+    if (err?.name === 'NoSuchBucket' || err?.$metadata?.httpStatusCode === 404) {
+      errMsg = `Bucket/Space "${bucketName}" was not found. Please verify the bucket name and region/endpoint.`;
+    } else if (err?.name === 'InvalidAccessKeyId' || err?.Code === 'InvalidAccessKeyId') {
+      errMsg = 'Invalid Access Key ID.';
+    } else if (err?.name === 'SignatureDoesNotMatch' || err?.Code === 'SignatureDoesNotMatch') {
+      errMsg = 'Invalid Secret Key (Signature does not match).';
+    } else if (err?.name === 'AccessDenied' || err?.Code === 'AccessDenied') {
+      errMsg = `Access denied to Bucket/Space "${bucketName}". Please check API key permissions.`;
+    }
+    return { success: false, error: errMsg };
+  }
+}
+

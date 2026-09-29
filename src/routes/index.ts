@@ -140,15 +140,19 @@ const router: FastifyPluginAsync = async (fastify) => {
 
   // Web Homepage aggregated data
   fastify.get('/web-home', getWebHome);
+  fastify.get('/web/home', getWebHome);
   
   // Web all content for dynamic sections
   fastify.get('/web-all-content', getWebAllContent);
+  fastify.get('/web/all-content', getWebAllContent);
   
   // Web Browse paginated data
   fastify.get('/web-browse', getWebBrowse);
+  fastify.get('/web/browse', getWebBrowse);
   
   // Web Detail page data
   fastify.get('/web-detail/:contentId', getWebDetail);
+  fastify.get('/web/detail/:contentId', getWebDetail);
 
   // Public notifications (broadcast + recent sent logs)
   fastify.get('/public/notifications', async (request, reply) => {

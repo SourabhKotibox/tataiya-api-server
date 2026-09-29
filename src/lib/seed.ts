@@ -38,64 +38,48 @@ async function seedSubscriptionPlans() {
 
   const plans = [
     {
-      name: 'free',
-      displayName: 'Free',
+      name: 'Free',
+      duration: '1 Month',
+      durationValue: 1,
+      price: 0,
+      discount: 0,
+      totalPrice: 0,
+      status: true,
       description: 'Limited content with ads. Enjoy our free library.',
-      monthlyPrice: 0, quarterlyPrice: 0, annualPrice: 0,
-      currency: 'INR',
-      features: {
-        videoQuality: 'SD' as const, simultaneousScreens: 1,
-        downloadAllowed: false, maxDownloads: 0, adsEnabled: true,
-        liveTV: false, earlyAccess: false, exclusiveContent: false,
-        offlineViewing: false, dolbyAtmos: false, supportPriority: 'standard' as const,
-      },
-      contentAccess: 'free' as const, isActive: true, isPopular: false,
-      trialDays: 0, color: '#6b7280', order: 1,
+      level: 1,
     },
     {
-      name: 'basic',
-      displayName: 'Basic',
+      name: 'Basic',
+      duration: '1 Month',
+      durationValue: 1,
+      price: 149,
+      discount: 0,
+      totalPrice: 149,
+      status: true,
       description: 'HD streaming on 1 screen. No downloads.',
-      monthlyPrice: 149, quarterlyPrice: 399, annualPrice: 1499,
-      currency: 'INR',
-      features: {
-        videoQuality: 'HD' as const, simultaneousScreens: 1,
-        downloadAllowed: false, maxDownloads: 0, adsEnabled: false,
-        liveTV: false, earlyAccess: false, exclusiveContent: false,
-        offlineViewing: false, dolbyAtmos: false, supportPriority: 'standard' as const,
-      },
-      contentAccess: 'basic' as const, isActive: true, isPopular: false,
-      trialDays: 7, color: '#3b82f6', order: 2,
+      level: 2,
     },
     {
-      name: 'standard',
-      displayName: 'Standard',
+      name: 'Standard',
+      duration: '1 Month',
+      durationValue: 1,
+      price: 299,
+      discount: 0,
+      totalPrice: 299,
+      status: true,
       description: 'Full HD on 2 screens with downloads and Live TV.',
-      monthlyPrice: 299, quarterlyPrice: 799, annualPrice: 2999,
-      currency: 'INR',
-      features: {
-        videoQuality: 'FHD' as const, simultaneousScreens: 2,
-        downloadAllowed: true, maxDownloads: 25, adsEnabled: false,
-        liveTV: true, earlyAccess: false, exclusiveContent: false,
-        offlineViewing: true, dolbyAtmos: false, supportPriority: 'priority' as const,
-      },
-      contentAccess: 'standard' as const, isActive: true, isPopular: true,
-      trialDays: 14, color: '#8b5cf6', order: 3,
+      level: 3,
     },
     {
-      name: 'premium',
-      displayName: 'Premium',
+      name: 'Premium',
+      duration: '1 Month',
+      durationValue: 1,
+      price: 499,
+      discount: 0,
+      totalPrice: 499,
+      status: true,
       description: '4K + Dolby Atmos on 4 screens. Full library access.',
-      monthlyPrice: 499, quarterlyPrice: 1299, annualPrice: 4999,
-      currency: 'INR',
-      features: {
-        videoQuality: '4K' as const, simultaneousScreens: 4,
-        downloadAllowed: true, maxDownloads: 100, adsEnabled: false,
-        liveTV: true, earlyAccess: true, exclusiveContent: true,
-        offlineViewing: true, dolbyAtmos: true, supportPriority: 'vip' as const,
-      },
-      contentAccess: 'premium' as const, isActive: true, isPopular: false,
-      trialDays: 14, color: '#e50914', order: 4,
+      level: 4,
     },
   ];
 
@@ -1151,5 +1135,6 @@ export async function seedDatabase(): Promise<void> {
     logger.info('Database seeding complete');
   } catch (err) {
     logger.error({ err }, 'Database seeding failed');
+    throw err;
   }
 }

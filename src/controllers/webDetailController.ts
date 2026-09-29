@@ -2,23 +2,18 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { MovieModel } from '../models/Movie';
 import { logger } from '../lib/logger';
 
-/** Turn S3 keys / relative paths into absolute playable URLs for the web player */
+/** Turn relative paths / URLs into valid playable URLs for the web player */
 function toPublicMediaUrl(raw: unknown): string | null {
   const u = String(raw || '').trim();
   if (!u || u.startsWith('blob:')) return null;
   if (/^https?:\/\//i.test(u) || u.startsWith('data:')) {
-    // Old bug: saved as https://tataiya.in/uploads/media/...
-    const m = u.match(/^https?:\/\/(?:www\.)?tataiya\.in\/uploads\/(media\/.+)$/i);
-    if (m) {
-      const s3Base = (process.env.AWS_S3_PUBLIC_BASE_URL || 'https://tatiyatv.s3.eu-north-1.amazonaws.com').replace(/\/$/, '');
-      return `${s3Base}/${m[1]}`;
-    }
     return u;
   }
-  const clean = u.replace(/^\/+/, '').replace(/^uploads\//, '');
-  if (!clean) return null;
-  const s3Base = (process.env.AWS_S3_PUBLIC_BASE_URL || 'https://tatiyatv.s3.eu-north-1.amazonaws.com').replace(/\/$/, '');
-  return `${s3Base}/${clean}`;
+  let clean = u.replace(/^\/+/, '');
+  if (clean.startsWith('uploads/')) {
+    return `/${clean}`;
+  }
+  return `/uploads/${clean}`;
 }
 
 export const getWebDetail = async (request: FastifyRequest, reply: FastifyReply) => {
@@ -161,7 +156,7 @@ export const getWebDetail = async (request: FastifyRequest, reply: FastifyReply)
       studio: item.studio || null,
       producer: item.producer || null,
       tags: item.tags || [],
-      isLocked: item.planRequired !== 'free',
+      isLocked: !!item.planRequired && String(item.planRequired).toLowerCase() !== 'free',
       planRequired: item.planRequired || 'free',
       downloadAllowed: item.downloadAllowed !== false,
       episodeMeta: `HD • ${genreNames.join(', ')} • ${durationFormatted || 'N/A'}`,

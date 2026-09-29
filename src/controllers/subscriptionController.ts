@@ -401,7 +401,6 @@ export const bulkDeleteSubscriptions = async (request: FastifyRequest, reply: Fa
 
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
-import { SettingsModel } from '../models/Settings';
 
 export const createRazorpayOrder = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
@@ -413,21 +412,10 @@ export const createRazorpayOrder = async (request: FastifyRequest, reply: Fastif
       return reply.status(404).send({ success: false, error: 'Plan not found' });
     }
 
-    // Get settings
-    const settings = await SettingsModel.findOne().lean();
-    if (!settings?.razorpayEnabled || !settings?.razorpayKeyId || !settings?.razorpayKeySecret) {
-      return reply.status(400).send({ success: false, error: 'Razorpay is not configured or enabled' });
-    }
-
-    const instance = new Razorpay({
-      key_id: settings.razorpayKeyId,
-      key_secret: settings.razorpayKeySecret,
-    });
-
     const amountInPaise = Math.round((plan.totalPrice || 0) * 100);
 
     if (amountInPaise === 0) {
-      // Provision free subscription directly
+      // Provision free subscription directly without requiring Razorpay
       const userId = (request.user as any)?.id || (request.body as any).userId;
       if (!userId) {
         return reply.status(400).send({ success: false, error: 'User ID is required for free plans' });
@@ -461,6 +449,17 @@ export const createRazorpayOrder = async (request: FastifyRequest, reply: Fastif
         subscriptionId: subscription._id
       });
     }
+
+    // Get settings for paid orders
+    const settings = await SettingsModel.findOne().lean();
+    if (!settings?.razorpayEnabled || !settings?.razorpayKeyId || !settings?.razorpayKeySecret) {
+      return reply.status(400).send({ success: false, error: 'Razorpay is not configured or enabled' });
+    }
+
+    const instance = new Razorpay({
+      key_id: settings.razorpayKeyId,
+      key_secret: settings.razorpayKeySecret,
+    });
 
     const order = await instance.orders.create({
       amount: amountInPaise,

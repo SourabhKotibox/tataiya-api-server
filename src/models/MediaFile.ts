@@ -20,7 +20,7 @@ export interface IMediaFile extends Document {
   contentHash?: string; // SHA-256 hash of file content for deduplication
   contentName?: string; // Name of the movie, TV series, or short drama this media belongs to
   contentType?: string; // 'movie' | 'tvshow' | 'drama' | etc.
-  storageType: 'local' | 's3';
+  storageType: 'local' | 's3' | 'spaces';
   s3Key?: string;
   // HLS-related fields
   isHls?: boolean;
@@ -66,7 +66,7 @@ const MediaFileSchema = new Schema<IMediaFile>(
     contentHash: { type: String, required: false, index: true },
     contentName: { type: String, required: false, index: true },
     contentType: { type: String, required: false, index: true },
-    storageType: { type: String, enum: ['local', 's3'], default: 'local', required: true },
+    storageType: { type: String, enum: ['local', 's3', 'spaces'], default: 'local', required: true },
     s3Key: { type: String, required: false },
     // HLS fields
     isHls: { type: Boolean, default: false },

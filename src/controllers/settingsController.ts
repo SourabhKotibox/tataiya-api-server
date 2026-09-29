@@ -3,6 +3,7 @@ import { SettingsModel } from '../models/Settings';
 import uploadHandler from '../lib/uploadHandler';
 import { updateEnvFile } from '../lib/envUpdater';
 import { sendWelcomeEmail } from '../lib/email';
+import { testStorageConnection } from '../lib/s3';
 
 async function getOrCreateSettings() {
   let settings = await SettingsModel.findOne();
@@ -48,6 +49,8 @@ export const getSettings = async (request: FastifyRequest, reply: FastifyReply) 
       messageCentralHasAuthToken: !!String(raw.messageCentralAuthToken || '').trim(),
       messageCentralHasPassword: !!String(raw.messageCentralPassword || '').trim(),
       messageCentralHasEmail: !!String(raw.messageCentralEmail || '').trim(),
+      doHasAccessKey: !!String(raw.doAccessKey || '').trim(),
+      doHasSecretKey: !!String(raw.doSecretKey || '').trim(),
     };
 
     if (isAdmin) {
@@ -64,6 +67,7 @@ export const getSettings = async (request: FastifyRequest, reply: FastifyReply) 
     const sensitiveFields = [
       'mailEmail', 'mailDriver', 'mailHost', 'mailPort', 'mailEncryption', 'mailUsername', 'mailPassword', 'mailFrom', 'mailFromName',
       'awsAccessKeyId', 'awsSecretAccessKey', 'awsRegion', 'awsBucket', 'awsPathStyleEndpoint', 'bunnyStorageZone', 'bunnyAccessKey',
+      'doAccessKey', 'doSecretKey',
       'fcmServerKey', 'fcmSenderId', 'firebaseApiKey', 'firebaseProjectId', 'firebaseAppId',
       'razorpayKeySecret',
       'messageCentralPassword', 'messageCentralAuthToken', 'messageCentralCustomerId', 'messageCentralEmail',
@@ -110,6 +114,12 @@ export const updateSettings = async (request: FastifyRequest, reply: FastifyRepl
     if (body.awsRegion !== undefined) envUpdates.AWS_S3_REGION = body.awsRegion;
     if (body.awsBucket !== undefined) envUpdates.AWS_S3_BUCKET_NAME = body.awsBucket;
     if (body.awsCdnUrl !== undefined) envUpdates.AWS_S3_PUBLIC_BASE_URL = body.awsCdnUrl;
+    if (body.doSpaceName !== undefined) envUpdates.DO_SPACES_NAME = body.doSpaceName;
+    if (body.doRegion !== undefined) envUpdates.DO_SPACES_REGION = body.doRegion;
+    if (body.doEndpoint !== undefined) envUpdates.DO_SPACES_ENDPOINT = body.doEndpoint;
+    if (body.doAccessKey !== undefined) envUpdates.DO_SPACES_ACCESS_KEY = body.doAccessKey;
+    if (body.doSecretKey !== undefined && body.doSecretKey) envUpdates.DO_SPACES_SECRET_KEY = body.doSecretKey;
+    if (body.doCdnUrl !== undefined) envUpdates.DO_SPACES_CDN_URL = body.doCdnUrl;
 
     if (Object.keys(envUpdates).length > 0) {
       updateEnvFile(envUpdates);
@@ -124,6 +134,8 @@ export const updateSettings = async (request: FastifyRequest, reply: FastifyRepl
         messageCentralHasAuthToken: !!String(raw.messageCentralAuthToken || '').trim(),
         messageCentralHasPassword: !!String(raw.messageCentralPassword || '').trim(),
         messageCentralHasEmail: !!String(raw.messageCentralEmail || '').trim(),
+        doHasAccessKey: !!String(raw.doAccessKey || '').trim(),
+        doHasSecretKey: !!String(raw.doSecretKey || '').trim(),
       },
     });
   } catch (error: any) {
@@ -206,6 +218,33 @@ export const testEmail = async (request: FastifyRequest, reply: FastifyReply) =>
       success: false,
       error: 'Email not sent. SMTP credentials are not configured.',
       hint: 'Go to Settings → Mail and configure mailUsername, mailPassword, mailHost, and mailPort. Or set EMAIL_USER and EMAIL_PASS in your .env file.'
+    });
+  } catch (error: any) {
+    console.error(error);
+    return reply.status(500).send({ success: false, error: error.message });
+  }
+};
+
+export const testStorage = async (request: FastifyRequest, reply: FastifyReply) => {
+  try {
+    const body = (request.body || {}) as {
+      driver?: 's3' | 'spaces';
+      spaceName?: string;
+      region?: string;
+      endpoint?: string;
+      accessKey?: string;
+      secretKey?: string;
+      bucket?: string;
+      pathStyle?: boolean;
+    };
+
+    const result = await testStorageConnection(body);
+    if (result.success) {
+      return reply.send({ success: true, message: result.message });
+    }
+    return reply.status(400).send({
+      success: false,
+      error: result.error || 'Failed to connect to storage provider.',
     });
   } catch (error: any) {
     console.error(error);

@@ -486,10 +486,11 @@ export const reprocessMediaHls = async (request: FastifyRequest, reply: FastifyR
       return reply.status(400).send({ success: false, error: 'Only video files can be transcoded' });
     }
 
-    const storageType = ((file as any).storageType === 's3' ? 's3' : 'local') as 'local' | 's3';
+    const storageType = ((file as any).storageType || 'local') as 'local' | 's3' | 'spaces';
+    const isRemote = storageType === 's3' || storageType === 'spaces';
     const fullPath = path.join(uploadsRoot, (file.filePath || '').replace(/^\/*uploads\//, '').replace(/^\/+/, ''));
 
-    if (storageType === 'local' && !fs.existsSync(fullPath) && !(file as any).s3Key) {
+    if (!isRemote && !fs.existsSync(fullPath) && !(file as any).s3Key) {
       return reply.status(404).send({ success: false, error: 'Source video file missing on disk' });
     }
 
@@ -505,7 +506,7 @@ export const reprocessMediaHls = async (request: FastifyRequest, reply: FastifyR
     setImmediate(() => {
       transcodeToHls(
         file._id.toString(),
-        storageType === 's3' ? '' : fullPath,
+        isRemote ? '' : fullPath,
         baseUrl,
         storageType
       ).catch((err) => {
@@ -542,7 +543,7 @@ export const deleteFile = async (request: FastifyRequest, reply: FastifyReply) =
     // Delete file from storage
     await uploadHandler.deleteUploadedFile(
       (file as any).s3Key || file.filePath,
-      ((file as any).storageType === 's3' ? 's3' : 'local') as 'local' | 's3'
+      ((file as any).storageType || 'local') as 'local' | 's3' | 'spaces'
     );
 
     // Delete from DB
@@ -645,6 +646,10 @@ export const confirmS3MediaUpload = async (request: FastifyRequest, reply: Fasti
       (body.contentType || '').startsWith('video/') ||
       /\.(mp4|webm|mov|mkv|avi|m4v)$/i.test(body.originalName || body.fileName || '');
 
+    const { getS3Settings } = await import('../lib/s3');
+    const s3Settings = await getS3Settings();
+    const activeStorageType = s3Settings.storageDriver === 'spaces' ? 'spaces' : 's3';
+
     const createPayload: Record<string, any> = {
       name: body.originalName || body.fileName || path.basename(body.key),
       url: body.publicUrl,
@@ -653,7 +658,7 @@ export const confirmS3MediaUpload = async (request: FastifyRequest, reply: Fasti
       fileType: body.contentType || 'application/octet-stream',
       folder: new Types.ObjectId(body.folderId),
       source: body.source || 'media-library',
-      storageType: 's3',
+      storageType: activeStorageType,
       s3Key: body.key,
     };
     if (isVideo) createPayload.hlsStatus = 'processing';
@@ -667,8 +672,8 @@ export const confirmS3MediaUpload = async (request: FastifyRequest, reply: Fasti
       const baseUrl = `${protocol}://${host}`;
       // Fire-and-forget — never block the upload response on HLS
       setImmediate(() => {
-        transcodeToHls(mediaFile._id.toString(), '', baseUrl, 's3').catch((err) => {
-          logger.error({ err, mediaFileId: mediaFile._id }, 'Failed to transcode video to HLS after direct S3 upload');
+        transcodeToHls(mediaFile._id.toString(), '', baseUrl, activeStorageType).catch((err) => {
+          logger.error({ err, mediaFileId: mediaFile._id }, 'Failed to transcode video to HLS after direct remote upload');
         });
       });
     }

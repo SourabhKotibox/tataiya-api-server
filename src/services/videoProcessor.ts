@@ -2,9 +2,20 @@ import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import { Types } from 'mongoose';
+import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+import ffprobeInstaller from '@ffprobe-installer/ffprobe';
+import { fileURLToPath } from 'url';
 import { MovieModel } from '../models/Movie';
 import { logger } from '../lib/logger';
-import { isS3Configured, uploadHlsFolderToS3, getHlsPublicBaseUrl, getS3PublicUrl } from '../lib/s3';
+import { isS3Configured, uploadHlsFolderToS3, getHlsPublicBaseUrl, getS3PublicUrl, downloadFromS3ToFile } from '../lib/s3';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const UPLOADS_ROOT = path.resolve(__dirname, '../../uploads');
+const TEMP_DIR = path.resolve(__dirname, '../../uploads/temp');
+
+const ffmpegPath = ffmpegInstaller?.path || 'ffmpeg';
+const ffprobePath = ffprobeInstaller?.path || 'ffprobe';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // All 7 quality renditions with Netflix-grade bitrate settings
@@ -19,11 +30,6 @@ export const HLS_QUALITY_LADDER = [
   { name: '1440p', width: 2560, height: 1440, bitrate: '8000k', maxrate: '8560k',  bufsize: '12000k', audioBitrate: '192k' },
   { name: '2160p', width: 3840, height: 2160, bitrate: '16000k',maxrate: '17120k', bufsize: '24000k', audioBitrate: '192k' },
 ] as const;
-
-/** Low-RAM servers: encode these only, one at a time (avoids OOM from 6-stream single-pass) */
-const HLS_QUALITY_LADDER_SAFE = HLS_QUALITY_LADDER.filter((q) =>
-  ['360p', '480p', '720p', '1080p'].includes(q.name)
-);
 
 export type QualityName = typeof HLS_QUALITY_LADDER[number]['name'];
 
@@ -74,12 +80,11 @@ const ensureDir = (dir: string) => {
 
 export const toLocalUploadPath = (urlPath: string): string | null => {
   if (!urlPath) return null;
-  const uploadsRoot = path.join(process.cwd(), 'uploads');
   let relPath = urlPath;
   if (relPath.startsWith('/uploads/')) relPath = relPath.replace('/uploads/', '');
   else if (relPath.startsWith('uploads/')) relPath = relPath.replace('uploads/', '');
   else if (relPath.startsWith('/media/')) relPath = relPath.replace('/', '');
-  return path.join(uploadsRoot, relPath);
+  return path.join(UPLOADS_ROOT, relPath);
 };
 
 const getFolderSize = (folderPath: string): number => {
@@ -103,7 +108,7 @@ const getFolderSize = (folderPath: string): number => {
  */
 const probeResolution = async (inputPath: string): Promise<{ width: number; height: number } | null> => {
   try {
-    const output = await runCommand('ffprobe', [
+    const output = await runCommand(ffprobePath, [
       '-v', 'error',
       '-select_streams', 'v:0',
       '-show_entries', 'stream=width,height',
@@ -124,12 +129,40 @@ const probeResolution = async (inputPath: string): Promise<{ width: number; heig
 
 /**
  * Filter quality ladder to only include renditions whose height
- * does not exceed the source video's height.
+ * does not exceed the source video's height. Always guarantees at least 1 rendition.
  */
 const filterQualitiesByResolution = (
-  sourceHeight: number,
-  ladder: ReadonlyArray<(typeof HLS_QUALITY_LADDER)[number]>
-) => ladder.filter((q) => q.height <= sourceHeight);
+  sourceHeight: number
+) => {
+  const maxH = sourceHeight || 1080;
+  let matches = HLS_QUALITY_LADDER.filter((q) => q.height <= maxH);
+  if (matches.length === 0) {
+    matches = [HLS_QUALITY_LADDER[0]]; // fallback to 144p
+  }
+  // Cap to safe maximum of 4 ladders to ensure fast & reliable transcode
+  if (matches.length > 4) {
+    matches = [
+      matches.find((q) => q.name === '360p') || matches[0],
+      matches.find((q) => q.name === '480p') || matches[1],
+      matches.find((q) => q.name === '720p') || matches[matches.length - 2],
+      matches[matches.length - 1],
+    ].filter((v, i, a) => a.findIndex((t) => t.name === v.name) === i) as any;
+  }
+  return matches;
+};
+
+export const extractS3Key = (source: string): string | null => {
+  if (!source) return null;
+  if (/^https?:\/\//i.test(source)) {
+    try {
+      const parsed = new URL(source);
+      return parsed.pathname.replace(/^\/+/, '').replace(/^uploads\//, '');
+    } catch {
+      return null;
+    }
+  }
+  return source.replace(/^\/*uploads\//, '').replace(/^\/+/, '');
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core HLS Transcoder — Single-pass multi-variant FFmpeg (local storage)
@@ -141,55 +174,84 @@ export const transcodeHlsMultiResolution = async (options: {
   duration?: number;
 }) => {
   const { id, sourceVideoUrl, startSeconds, duration } = options;
+  let tempSourcePath: string | null = null;
 
-  // ── Resolve input path (local file, or remote/S3 URL for ffmpeg) ────────
-  let ffmpegInput = sourceVideoUrl;
-  const sourceVideoPath = toLocalUploadPath(sourceVideoUrl);
-  if (sourceVideoPath && fs.existsSync(sourceVideoPath)) {
-    ffmpegInput = sourceVideoPath;
-  } else if (sourceVideoUrl.startsWith('http://') || sourceVideoUrl.startsWith('https://')) {
-    ffmpegInput = sourceVideoUrl;
-  } else if (await isS3Configured()) {
-    ffmpegInput = await getS3PublicUrl(sourceVideoUrl);
-  } else if (!sourceVideoPath || !fs.existsSync(sourceVideoPath || '')) {
-    throw new Error(`Source video not found: ${sourceVideoUrl}`);
-  }
+  try {
+    ensureDir(TEMP_DIR);
 
-  // ── Determine local HLS output folder ──────────────────────────────────
-  const uploadsRoot = path.join(process.cwd(), 'uploads');
-  const hlsFolder    = path.join(uploadsRoot, 'hls', 'movies', id);
-  const localUrlBase = `/uploads/hls/movies/${id}`;
+    // ── Resolve input path (local file, or download remote/S3/Spaces source to temp) ──
+    let ffmpegInput: string | null = null;
+    const sourceVideoPath = toLocalUploadPath(sourceVideoUrl);
 
-  // Clear any existing HLS files to prevent mixing old and new uploads
-  if (fs.existsSync(hlsFolder)) {
-    try {
-      fs.rmSync(hlsFolder, { recursive: true, force: true });
-    } catch (rmErr) {
-      logger.warn({ rmErr, hlsFolder }, 'Failed to clear existing HLS folder');
+    if (sourceVideoPath && fs.existsSync(sourceVideoPath)) {
+      ffmpegInput = sourceVideoPath;
+    } else {
+      const s3Active = await isS3Configured();
+      const s3Key = extractS3Key(sourceVideoUrl);
+
+      if (s3Active && s3Key) {
+        tempSourcePath = path.join(
+          TEMP_DIR,
+          `movie-source-${id}-${Date.now()}${path.extname(s3Key) || '.mp4'}`
+        );
+        logger.info({ id, s3Key, tempSourcePath }, 'Downloading remote video for Movie HLS transcoding');
+        await downloadFromS3ToFile(s3Key, tempSourcePath);
+        if (fs.existsSync(tempSourcePath) && fs.statSync(tempSourcePath).size > 0) {
+          ffmpegInput = tempSourcePath;
+        } else {
+          throw new Error(`Authenticated download produced empty file for key: ${s3Key}`);
+        }
+      } else if (sourceVideoUrl.startsWith('http://') || sourceVideoUrl.startsWith('https://')) {
+        ffmpegInput = sourceVideoUrl;
+      }
+    }
+
+    if (!ffmpegInput || !fs.existsSync(ffmpegInput)) {
+      throw new Error(`Source video not found or could not be downloaded: ${sourceVideoUrl}`);
+    }
+
+    // ── Determine local HLS output folder ──────────────────────────────────
+    const hlsFolder    = path.join(UPLOADS_ROOT, 'hls', 'movies', id);
+    const localUrlBase = `/uploads/hls/movies/${id}`;
+
+    // Clear any existing HLS files to prevent mixing old and new uploads
+    if (fs.existsSync(hlsFolder)) {
+      try {
+        fs.rmSync(hlsFolder, { recursive: true, force: true });
+      } catch (rmErr) {
+        logger.warn({ rmErr, hlsFolder }, 'Failed to clear existing HLS folder');
+      }
+    }
+    ensureDir(hlsFolder);
+
+    // ── Detect source resolution & filter quality ladder ───────────────────
+    const sourceRes = await probeResolution(ffmpegInput);
+    const sourceHeight = sourceRes?.height ?? 1080;
+    const qualities = filterQualitiesByResolution(sourceHeight);
+    logger.info(
+      { id, sourceHeight, qualityCount: qualities.length, mode: 'sequential-safe' },
+      'Starting HLS transcoding'
+    );
+
+    return await transcodeHlsSequential({
+      startSeconds,
+      duration,
+      qualities,
+      hlsFolder,
+      localUrlBase,
+      ffmpegInput,
+      movieId: id,
+    });
+  } finally {
+    if (tempSourcePath && fs.existsSync(tempSourcePath)) {
+      try {
+        fs.unlinkSync(tempSourcePath);
+        logger.info({ id, tempSourcePath }, 'Cleaned up temporary source video file');
+      } catch (cleanupErr) {
+        logger.warn({ cleanupErr, tempSourcePath }, 'Failed to clean up temporary source video file');
+      }
     }
   }
-  ensureDir(hlsFolder);
-
-  // ── Detect source resolution & filter quality ladder ───────────────────
-  const sourceRes = await probeResolution(ffmpegInput);
-  const sourceHeight = sourceRes?.height ?? 1080;
-  // Always use the safe ladder (360–1080) and sequential encode — EC2 OOM-killed
-  // the 6-stream single-pass (ffmpeg + node ~2GB+). One quality at a time is stable.
-  const qualities = filterQualitiesByResolution(sourceHeight, HLS_QUALITY_LADDER_SAFE);
-  logger.info(
-    { id, sourceHeight, qualityCount: qualities.length, mode: 'sequential-safe' },
-    'Starting HLS transcoding'
-  );
-
-  return transcodeHlsSequential({
-    startSeconds,
-    duration,
-    qualities,
-    hlsFolder,
-    localUrlBase,
-    ffmpegInput,
-    movieId: id,
-  });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -216,14 +278,14 @@ const transcodeHlsSequential = async (opts: {
     if (duration !== undefined && duration > 0) args.push('-t', String(duration));
 
     args.push(
-      '-threads',      '2',
-      '-vf',           `scale=${q.width}:${q.height}`,
+      '-threads',      '0',
+      '-vf',           `scale=-2:${q.height}`,
       '-c:v',          'libx264',
       '-b:v',          q.bitrate,
       '-maxrate',      q.maxrate,
       '-bufsize',      q.bufsize,
       '-profile:v',    'main',
-      '-preset',       'veryfast',
+      '-preset',       'ultrafast',
       '-c:a',          'aac',
       '-b:a',          q.audioBitrate,
       '-ar',           '48000',
@@ -234,7 +296,7 @@ const transcodeHlsSequential = async (opts: {
       path.join(qFolder, 'playlist.m3u8'),
     );
 
-    await runCommand('ffmpeg', args);
+    await runCommand(ffmpegPath, args);
     logger.info({ quality: q.name }, 'Sequential quality encoded');
   }
 
@@ -357,7 +419,7 @@ export const autoDetectAndSyncQualities = async (
   const doc = await MovieModel.findById(id).lean();
   if (!doc) return null;
 
-  const hlsFolder = path.join(process.cwd(), 'uploads/hls', 'movies', id.toString());
+  const hlsFolder = path.join(UPLOADS_ROOT, 'hls', 'movies', id.toString());
   const masterPlaylistPath = path.join(hlsFolder, 'master.m3u8');
 
   if (fs.existsSync(masterPlaylistPath)) {

@@ -6,7 +6,7 @@ import type { FastifyRequest } from 'fastify';
 import { MediaFileModel } from '../models/MediaFile';
 import { MediaFolderModel } from '../models/MediaFolder';
 import { Types } from 'mongoose';
-import { uploadToS3, deleteFromS3, isS3Configured } from './s3';
+import { uploadToS3, deleteFromS3, isS3Configured, getS3Settings } from './s3';
 import { transcodeToHls } from './hlsTranscoder';
 import { logger } from './logger';
 import { ensureVttSubtitle, isSubtitleFile } from './subtitleConverter';
@@ -98,7 +98,7 @@ export interface UploadedFileInfo {
   fileSize: number;
   mimeType: string;
   uploadType: UploadType;
-  storageType?: 'local' | 's3';
+  storageType?: 'local' | 's3' | 'spaces';
   s3Key?: string;
   mediaFileId?: string;
   isHls?: boolean;
@@ -213,7 +213,7 @@ export const saveFileFromPart = async (
           inferPreset(part.filename, options?.source, uploadType)
         );
         if (!optimized.skipped) {
-          buffer = optimized.buffer;
+          buffer = Buffer.from(optimized.buffer);
           mimeType = optimized.mimeType;
           finalKey = finalKey.replace(/\.[^.]+$/, '') + optimized.extension;
           displayName = path.basename(finalKey);
@@ -249,6 +249,8 @@ export const saveFileFromPart = async (
 
     const publicUrl = await uploadToS3(finalKey, buffer, mimeType);
     const isVid = isVideoFile(part.filename, part.mimetype || '');
+    const currentSettings = await getS3Settings();
+    const activeStorageType = currentSettings.storageDriver === 'spaces' ? 'spaces' : 's3';
 
     const fileInfo: UploadedFileInfo = {
       originalName: displayName,
@@ -258,7 +260,7 @@ export const saveFileFromPart = async (
       fileSize: buffer.length,
       mimeType,
       uploadType,
-      storageType: 's3',
+      storageType: activeStorageType,
       s3Key: finalKey,
     };
 
@@ -276,7 +278,7 @@ export const saveFileFromPart = async (
           contentHash,
           contentName: options?.contentName,
           contentType: options?.contentType,
-          storageType: 's3',
+          storageType: activeStorageType,
           s3Key: finalKey,
         };
         if (isVid) createPayload.hlsStatus = 'processing';
@@ -287,8 +289,8 @@ export const saveFileFromPart = async (
         fileInfo.isHls = false;
 
         if (isVid) {
-          transcodeToHls(mediaFile._id.toString(), '', baseUrl, 's3').catch((err) => {
-            logger.error({ err, mediaFileId: mediaFile._id }, 'Failed to transcode video to HLS (S3)');
+          transcodeToHls(mediaFile._id.toString(), '', baseUrl, activeStorageType).catch((err) => {
+            logger.error({ err, mediaFileId: mediaFile._id }, 'Failed to transcode video to HLS (remote)');
           });
         }
       } catch (error) {
@@ -444,16 +446,16 @@ export const saveFileFromPart = async (
 
 export const deleteUploadedFile = async (
   relativeFilePath: string,
-  storageType?: 'local' | 's3'
+  storageType?: 'local' | 's3' | 'spaces'
 ) => {
   if (!relativeFilePath) return;
 
   const s3Configured = await isS3Configured();
-  if (storageType === 's3' || (s3Configured && !relativeFilePath.includes('/uploads/'))) {
+  if (storageType === 's3' || storageType === 'spaces' || (s3Configured && !relativeFilePath.includes('/uploads/'))) {
     await deleteFromS3(relativeFilePath.replace(/^\/*uploads\//, ''));
   }
 
-  if (storageType !== 's3') {
+  if (storageType !== 's3' && storageType !== 'spaces') {
     const fullPath = path.join(
       UPLOADS_ROOT,
       relativeFilePath.replace(/^\/*uploads\//, '').replace(/^\/+/, '')

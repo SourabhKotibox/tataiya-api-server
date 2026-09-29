@@ -31,13 +31,19 @@ export interface ISettings extends Document {
   mailFrom: string;
   mailFromName: string;
   // Storage
-  storageDriver: 'local' | 's3';
+  storageDriver: 'local' | 's3' | 'spaces';
   awsAccessKeyId: string;
   awsSecretAccessKey: string;
   awsRegion: string;
   awsBucket: string;
   awsPathStyleEndpoint: boolean;
   awsCdnUrl: string;
+  doSpaceName: string;
+  doRegion: string;
+  doEndpoint: string;
+  doAccessKey: string;
+  doSecretKey: string;
+  doCdnUrl: string;
   bunnyStorageZone: string;
   bunnyAccessKey: string;
   bunnyCdnUrl: string;
@@ -177,14 +183,20 @@ const SettingsSchema = new Schema<ISettings>(
     mailPassword: { type: String, default: '' },
     mailFrom: { type: String, default: 'tataiyafun@gmail.com' },
     mailFromName: { type: String, default: 'Tataiya' },
-    // Storage — default S3; switch to local anytime in admin settings
-    storageDriver: { type: String, enum: ['local', 's3'], default: 's3' },
+    // Storage — default S3; switch to local or spaces anytime in admin settings
+    storageDriver: { type: String, enum: ['local', 's3', 'spaces'], default: 's3' },
     awsAccessKeyId: { type: String, default: '' },
     awsSecretAccessKey: { type: String, default: '' },
     awsRegion: { type: String, default: 'us-east-1' },
     awsBucket: { type: String, default: '' },
     awsPathStyleEndpoint: { type: Boolean, default: false },
     awsCdnUrl: { type: String, default: '' },
+    doSpaceName: { type: String, default: '' },
+    doRegion: { type: String, default: 'nyc3' },
+    doEndpoint: { type: String, default: 'https://nyc3.digitaloceanspaces.com' },
+    doAccessKey: { type: String, default: '' },
+    doSecretKey: { type: String, default: '' },
+    doCdnUrl: { type: String, default: '' },
     bunnyStorageZone: { type: String, default: '' },
     bunnyAccessKey: { type: String, default: '' },
     bunnyCdnUrl: { type: String, default: '' },

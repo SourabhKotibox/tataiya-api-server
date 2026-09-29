@@ -1,6 +1,7 @@
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import ffprobeInstaller from '@ffprobe-installer/ffprobe';
+import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -175,7 +176,7 @@ async function transcodeWithMediaConvert(mediaFile: any): Promise<void> {
 async function transcodeLocalFfmpeg(
   mediaFile: any,
   inputFilePath: string,
-  storageType: 'local' | 's3'
+  storageType: 'local' | 's3' | 'spaces'
 ): Promise<void> {
   let tempDownload: string | null = null;
   try {
@@ -184,18 +185,25 @@ async function transcodeLocalFfmpeg(
     await mediaFile.save();
 
     let sourcePath = inputFilePath;
-    const useS3 =
-      storageType === 's3' || ((await isS3Configured()) && mediaFile.storageType === 's3');
+    const useRemote =
+      storageType === 's3' ||
+      storageType === 'spaces' ||
+      ((await isS3Configured()) && (mediaFile.storageType === 's3' || mediaFile.storageType === 'spaces'));
 
     // Always use a local file for ffmpeg/ffprobe — HTTPS URLs crash static ffprobe (SIGSEGV)
-    if (useS3 && mediaFile.s3Key) {
+    if (useRemote && mediaFile.s3Key) {
       tempDownload = path.join(
         TEMP_DIR,
         `${mediaFile._id}-${Date.now()}${path.extname(mediaFile.s3Key) || '.mp4'}`
       );
-      logger.info({ mediaFileId: mediaFile._id, s3Key: mediaFile.s3Key }, 'Downloading S3 video for local HLS');
+      logger.info({ mediaFileId: mediaFile._id, s3Key: mediaFile.s3Key }, 'Downloading remote video for local HLS');
       await downloadFromS3ToFile(mediaFile.s3Key, tempDownload);
       sourcePath = tempDownload;
+    } else if ((!sourcePath || !fs.existsSync(sourcePath)) && mediaFile.filePath) {
+      const localCandidate = path.join(UPLOADS_ROOT, mediaFile.filePath.replace(/^\/*uploads\//, '').replace(/^\/+/, ''));
+      if (fs.existsSync(localCandidate)) {
+        sourcePath = localCandidate;
+      }
     }
 
     if (!sourcePath || !fs.existsSync(sourcePath)) {
@@ -230,28 +238,35 @@ async function transcodeLocalFfmpeg(
       const segmentPattern = path.join(outputDir, 'segment-%03d.ts');
 
       await new Promise((resolve, reject) => {
-        ffmpeg(sourcePath)
-          .outputOptions([
-            '-preset', 'ultrafast',
-            '-threads', '0',
-            '-g', '48',
-            '-sc_threshold', '0',
-            '-keyint_min', '48',
-            '-hls_time', '6',
-            '-hls_list_size', '0',
-            '-hls_segment_filename', segmentPattern,
-            '-vf', `scale=-2:${preset.height}`,
-            '-b:v', `${preset.bitrate}k`,
-            '-maxrate', `${preset.bitrate * 1.5}k`,
-            '-bufsize', `${preset.bitrate * 2}k`,
-            '-c:a', 'aac',
-            '-b:a', '96k',
-            '-ac', '2',
-          ])
-          .output(playlistPath)
-          .on('end', () => resolve(null))
-          .on('error', (err) => reject(err))
-          .run();
+        const args = [
+          '-y',
+          '-i', sourcePath,
+          '-c:v', 'libx264',
+          '-preset', 'ultrafast',
+          '-threads', '0',
+          '-g', '48',
+          '-sc_threshold', '0',
+          '-keyint_min', '48',
+          '-hls_time', '6',
+          '-hls_list_size', '0',
+          '-hls_segment_filename', segmentPattern,
+          '-vf', `scale=-2:${preset.height}`,
+          '-b:v', `${preset.bitrate}k`,
+          '-maxrate', `${preset.bitrate * 1.5}k`,
+          '-bufsize', `${preset.bitrate * 2}k`,
+          '-c:a', 'aac',
+          '-b:a', '96k',
+          '-ac', '2',
+          playlistPath,
+        ];
+        const child = spawn(ffmpegInstaller.path || 'ffmpeg', args);
+        let stderr = '';
+        child.stderr.on('data', (d) => { stderr += d.toString(); });
+        child.on('error', reject);
+        child.on('close', (code) => {
+          if (code === 0) resolve(null);
+          else reject(new Error(stderr.trim() || `ffmpeg exited with code ${code}`));
+        });
       });
 
       return {
@@ -282,7 +297,7 @@ async function transcodeLocalFfmpeg(
 
     let masterPlaylistPath = `/uploads/hls/${mediaFile._id.toString()}/index.m3u8`;
 
-    if (useS3 && (await isS3Configured())) {
+    if (useRemote && (await isS3Configured())) {
       const s3Prefix = `hls/${mediaFile._id.toString()}`;
       await uploadHlsFolderToS3(hlsOutputDir, s3Prefix);
       const hlsBase = await getHlsPublicBaseUrl();
@@ -319,7 +334,7 @@ export const transcodeToHls = async (
   mediaFileId: string,
   inputFilePath: string,
   _baseUrl: string,
-  storageType: 'local' | 's3' = 'local'
+  storageType: 'local' | 's3' | 'spaces' = 'local'
 ): Promise<void> => {
   const mediaFile = await MediaFileModel.findById(mediaFileId);
   if (!mediaFile) throw new Error('Media file not found');
@@ -330,9 +345,11 @@ export const transcodeToHls = async (
     const refreshed = await MediaFileModel.findById(mediaFileId);
     if (!refreshed) throw new Error('Media file not found');
 
+    const s3Settings = await getS3Settings();
     const useAws =
       isMediaConvertEnabled() &&
       (await isS3Configured()) &&
+      s3Settings.storageDriver === 's3' &&
       (!!refreshed.s3Key || refreshed.storageType === 's3');
 
     if (useAws) {
@@ -352,32 +369,6 @@ export const transcodeToHls = async (
         fileSize = s3Size;
         (refreshed as any).fileSize = s3Size;
       }
-    }
-
-    // Large local HLS OOMs / hours on small EC2 — mark progressive MP4 ready (playable immediately)
-    if (fileSize >= 400 * 1024 * 1024) {
-      if (!refreshed.url) throw new Error('No playable URL for large video');
-      refreshed.isHls = true;
-      refreshed.hlsMasterPlaylistUrl = refreshed.url;
-      refreshed.hlsMasterPlaylistPath = refreshed.url;
-      refreshed.hlsQualities = [
-        {
-          quality: 'source',
-          url: refreshed.url,
-          filePath: refreshed.url,
-          bitrate: 0,
-          resolution: 'source',
-        },
-      ];
-      refreshed.hlsStatus = 'completed';
-      (refreshed as any).transcoder = 'progressive';
-      refreshed.hlsError = undefined;
-      await refreshed.save();
-      logger.info(
-        { mediaFileId, fileSize },
-        'Large video — progressive MP4 ready (enable AWS MediaConvert for multi-quality HLS)'
-      );
-      return;
     }
 
     await transcodeLocalFfmpeg(refreshed, inputFilePath, storageType);
