@@ -15,6 +15,8 @@ export interface ISettings extends Document {
   logoUrl: string;
   darkLogoUrl: string;
   lightLogoUrl: string;
+  lightLogoSize?: number;
+  darkLogoSize?: number;
   faviconUrl: string;
   logoStyle: 'icon' | 'fill';
   loginTitle: string;
@@ -168,6 +170,8 @@ const SettingsSchema = new Schema<ISettings>(
     logoUrl: { type: String, default: 'https://i.imgur.com/45cG5Kc.png' },
     darkLogoUrl: { type: String, default: 'https://i.imgur.com/45cG5Kc.png' },
     lightLogoUrl: { type: String, default: 'https://i.imgur.com/45cG5Kc.png' },
+    lightLogoSize: { type: Number, default: 32 },
+    darkLogoSize: { type: Number, default: 32 },
     faviconUrl: { type: String, default: '' },
     logoStyle: { type: String, enum: ['icon', 'fill'], default: 'fill' },
     loginTitle: { type: String, default: 'Welcome Back' },

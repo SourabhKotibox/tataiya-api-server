@@ -27,6 +27,11 @@ const mapContentItem = (item: any) => {
     language: item.languages && item.languages.length > 0 ? 'Multi' : 'EN',
     badge,
     genres: (item.genres || []).map((g: any) => g?.name || g),
+    planRequired: item.planRequired || 'free',
+    isPremium: !!item.planRequired && String(item.planRequired).toLowerCase() !== 'free',
+    trailerUrl: item.trailerUrl || null,
+    hlsUrl: item.hlsUrl || item.videoUrl || null,
+    videoUrl: item.videoUrl || item.hlsUrl || null,
   };
 };
 
@@ -89,7 +94,7 @@ export const getWebBrowse = async (request: FastifyRequest, reply: FastifyReply)
       sort = { imdbRating: -1, views: -1 };
     }
 
-    const selectFields = 'title description shortDescription thumbnail bannerImage posterImage year rating ageRating duration imdbRating featured trending isNewContent views genres languages createdAt';
+    const selectFields = 'title description shortDescription thumbnail bannerImage posterImage year rating ageRating duration imdbRating featured trending isNewContent views genres languages planRequired trailerUrl hlsUrl videoUrl createdAt';
 
     const [rawItems, total] = await Promise.all([
       MovieModel.find(filter).sort(sort).skip(skip).limit(limit).select(selectFields).populate('genres', 'name').lean(),

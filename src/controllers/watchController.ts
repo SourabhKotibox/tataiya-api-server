@@ -16,6 +16,22 @@ const PLAN_LEVELS: Record<string, number> = {
   basic: 1,
   standard: 2,
   premium: 3,
+  vip: 4,
+};
+
+const normalizePlanKey = (name?: string): string => {
+  const n = String(name || 'free').toLowerCase().trim();
+  if (!n || n === 'free' || /\bfree\b/.test(n)) return 'free';
+  if (n.includes('vip')) return 'vip';
+  if (n.includes('premium')) return 'premium';
+  if (n.includes('standard')) return 'standard';
+  if (n.includes('basic')) return 'basic';
+  return n;
+};
+
+const getPlanLevel = (plan?: string): number => {
+  const k = normalizePlanKey(plan);
+  return PLAN_LEVELS[k] ?? 0;
 };
 
 import { buildShareUrl } from '../lib/config';
@@ -41,15 +57,11 @@ const getOptionalUser = async (request: FastifyRequest): Promise<{ userId: strin
 };
 
 const canAccessItem = (isFree: boolean, isLocked: boolean, contentPlanRequired: string, userPlan: string): boolean => {
-  if (isFree) return true;
-  if (isLocked) {
-    const required = String(contentPlanRequired || 'free').toLowerCase();
-    if (!required || required === 'free') return true;
-    // Any active paid plan unlocks paid content (Standard unlocks premium-tagged titles too)
-    const plan = String(userPlan || 'free').toLowerCase();
-    return !!plan && plan !== 'free';
-  }
-  return true;
+  const reqKey = normalizePlanKey(contentPlanRequired);
+  if (isFree || reqKey === 'free') return true;
+  const userKey = normalizePlanKey(userPlan);
+  if (userKey === 'free') return false;
+  return getPlanLevel(userKey) >= getPlanLevel(reqKey);
 };
 
 // Helper to convert relative URLs to absolute URLs (local storage)

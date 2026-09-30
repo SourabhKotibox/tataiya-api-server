@@ -4,6 +4,7 @@ import {
   listNotificationLogs,
   getNotificationLogById,
   createNotificationLog,
+  updateNotificationLog,
   deleteNotificationLog,
   bulkDeleteNotificationLogs,
 } from '../controllers/notificationLogController';
@@ -17,6 +18,9 @@ const notificationLogsRoutes: FastifyPluginAsync = async (fastify, opts) => {
 
   // Create new notification log
   fastify.post('/', { onRequest: [requirePermission('notifications', 'canCreate')] }, createNotificationLog);
+
+  // Update notification log
+  fastify.put('/item/:notificationId', { onRequest: [requirePermission('notifications', 'canEdit')] }, updateNotificationLog);
 
   // Delete notification log
   fastify.delete('/item/:notificationId', { onRequest: [requirePermission('notifications', 'canDelete')] }, deleteNotificationLog);

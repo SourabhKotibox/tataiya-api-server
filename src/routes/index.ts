@@ -154,50 +154,31 @@ const router: FastifyPluginAsync = async (fastify) => {
   fastify.get('/web-detail/:contentId', getWebDetail);
   fastify.get('/web/detail/:contentId', getWebDetail);
 
-  // Public notifications (broadcast + recent sent logs)
+  // Public notifications (user broadcast logs)
   fastify.get('/public/notifications', async (request, reply) => {
     try {
       const { NotificationLogModel } = await import('../models/NotificationLog');
-      let notifications = await NotificationLogModel.find({
-        $or: [
-          { type: { $in: ['all', 'broadcast', 'announcement', 'promo', 'system'] } },
-          { isHighlight: true },
-        ],
-      })
+      const notifications = await NotificationLogModel.find({})
         .sort({ createdAt: -1 })
-        .limit(20)
-        .select('title text type createdAt isHighlight')
+        .limit(50)
+        .select('title text type createdAt updatedAt isHighlight userName userEmail')
         .lean();
 
-      // Seed a few defaults if empty so the bell isn't always blank on a new install
-      if (!notifications.length) {
-        const defaults = [
-          {
-            type: 'announcement',
-            isHighlight: true,
-            title: 'Welcome to Tataiya',
-            text: 'Stream premium 18+ movies anytime. Subscribe for full access and downloads.',
-            userName: 'Tataiya',
-            userEmail: 'tataiyafun@gmail.com',
-          },
-          {
-            type: 'promo',
-            isHighlight: true,
-            title: 'Standard plan — ₹30/month',
-            text: 'Unlock HD streaming and offline downloads with our Standard plan.',
-            userName: 'Tataiya',
-            userEmail: 'tataiyafun@gmail.com',
-          },
-        ];
-        await NotificationLogModel.insertMany(defaults);
-        notifications = await NotificationLogModel.find({})
-          .sort({ createdAt: -1 })
-          .limit(20)
-          .select('title text type createdAt isHighlight')
-          .lean();
-      }
-
-      return reply.send({ success: true, data: notifications });
+      return reply.send({
+        success: true,
+        data: notifications.map((n: any) => ({
+          _id: String(n._id),
+          id: String(n._id),
+          title: n.title,
+          text: n.text,
+          type: n.type || 'broadcast',
+          isHighlight: !!n.isHighlight,
+          userName: n.userName || 'All users',
+          userEmail: n.userEmail || '',
+          createdAt: n.createdAt,
+          updatedAt: n.updatedAt || n.createdAt,
+        })),
+      });
     } catch (error: any) {
       return reply.status(500).send({ success: false, error: error.message });
     }

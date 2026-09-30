@@ -17,8 +17,8 @@ const NotificationLogSchema = new Schema<INotificationLog>(
     isHighlight: { type: Boolean, default: false },
     title: { type: String, required: true },
     text: { type: String, required: true },
-    userName: { type: String, required: true },
-    userEmail: { type: String, required: true },
+    userName: { type: String, required: false, default: 'All users' },
+    userEmail: { type: String, required: false, default: '' },
   },
   { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } }
 );

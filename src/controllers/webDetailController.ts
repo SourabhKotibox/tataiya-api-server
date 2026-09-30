@@ -173,7 +173,7 @@ export const getWebDetail = async (request: FastifyRequest, reply: FastifyReply)
       const relatedRaw = await MovieModel.find({ genres: primaryGenreId, _id: { $ne: item._id }, status: 'published' })
         .sort({ views: -1 })
         .limit(5)
-        .select('title thumbnail posterImage bannerImage year rating ageRating duration imdbRating isNewContent featured trending views createdAt')
+        .select('title thumbnail posterImage bannerImage year rating ageRating duration imdbRating isNewContent featured trending views planRequired createdAt')
         .lean();
 
       related = relatedRaw.map((r: any) => {
@@ -190,6 +190,8 @@ export const getWebDetail = async (request: FastifyRequest, reply: FastifyReply)
           duration: dur || 'N/A',
           imdbRating: r.imdbRating?.toString() || (r.rating || '8.0'),
           ageRating: r.ageRating ? `${r.ageRating}+` : '18+',
+          planRequired: r.planRequired || 'free',
+          isPremium: !!r.planRequired && String(r.planRequired).toLowerCase() !== 'free',
         };
       });
     }
