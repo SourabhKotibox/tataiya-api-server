@@ -280,6 +280,36 @@ export const createSubscription = async (request: FastifyRequest, reply: Fastify
     }
 
     const payload = await buildSubscriptionPayload(body);
+
+    if (payload.userId) {
+      const activeSub = await SubscriptionModel.findOne({
+        userId: payload.userId,
+        status: 'active',
+        $or: [
+          { endDate: { $gte: new Date() } },
+          { endDate: null },
+          { endDate: { $exists: false } },
+        ],
+      })
+        .sort({ endDate: -1 })
+        .lean();
+
+      if (activeSub) {
+        const activePlanKey = normalizePlanKey(activeSub.plan);
+        const targetPlanKey = normalizePlanKey(payload.plan);
+        const isSamePlanId = activeSub.planId && String(activeSub.planId) === String(payload.planId);
+        const isSamePlanKey = activePlanKey !== 'free' && activePlanKey === targetPlanKey;
+
+        if (isSamePlanId || isSamePlanKey) {
+          return reply.status(400).send({
+            success: false,
+            alreadySubscribed: true,
+            message: 'You are already subscribed to this plan.',
+          });
+        }
+      }
+    }
+
     const subscription = await SubscriptionModel.create(payload);
 
     await syncUserSubscription(payload.userId, {
@@ -405,6 +435,7 @@ import crypto from 'crypto';
 export const createRazorpayOrder = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
     const { planId } = request.body as { planId: string };
+    const userId = (request.user as any)?.id || (request.body as any)?.userId;
     
     // Validate Plan
     const plan = await SubscriptionPlanModel.findById(planId).lean();
@@ -412,11 +443,40 @@ export const createRazorpayOrder = async (request: FastifyRequest, reply: Fastif
       return reply.status(404).send({ success: false, error: 'Plan not found' });
     }
 
+    // Check if user is already actively subscribed to the same plan
+    if (userId) {
+      const activeSub = await SubscriptionModel.findOne({
+        userId,
+        status: 'active',
+        $or: [
+          { endDate: { $gte: new Date() } },
+          { endDate: null },
+          { endDate: { $exists: false } },
+        ],
+      })
+        .sort({ endDate: -1 })
+        .lean();
+
+      if (activeSub) {
+        const activePlanKey = normalizePlanKey(activeSub.plan);
+        const targetPlanKey = normalizePlanKey(plan.name);
+        const isSamePlanId = activeSub.planId && String(activeSub.planId) === String(plan._id);
+        const isSamePlanKey = activePlanKey !== 'free' && activePlanKey === targetPlanKey;
+
+        if (isSamePlanId || isSamePlanKey) {
+          return reply.status(400).send({
+            success: false,
+            alreadySubscribed: true,
+            message: 'You are already subscribed to this plan.',
+          });
+        }
+      }
+    }
+
     const amountInPaise = Math.round((plan.totalPrice || 0) * 100);
 
     if (amountInPaise === 0) {
       // Provision free subscription directly without requiring Razorpay
-      const userId = (request.user as any)?.id || (request.body as any).userId;
       if (!userId) {
         return reply.status(400).send({ success: false, error: 'User ID is required for free plans' });
       }
@@ -516,6 +576,36 @@ export const verifyRazorpayPayment = async (request: FastifyRequest, reply: Fast
     const plan = await SubscriptionPlanModel.findById(planId).lean();
     if (!plan) {
       return reply.status(404).send({ success: false, error: 'Plan not found' });
+    }
+
+    // Check if user is already actively subscribed to the same plan
+    if (userId) {
+      const activeSub = await SubscriptionModel.findOne({
+        userId,
+        status: 'active',
+        $or: [
+          { endDate: { $gte: new Date() } },
+          { endDate: null },
+          { endDate: { $exists: false } },
+        ],
+      })
+        .sort({ endDate: -1 })
+        .lean();
+
+      if (activeSub) {
+        const activePlanKey = normalizePlanKey(activeSub.plan);
+        const targetPlanKey = normalizePlanKey(plan.name);
+        const isSamePlanId = activeSub.planId && String(activeSub.planId) === String(plan._id);
+        const isSamePlanKey = activePlanKey !== 'free' && activePlanKey === targetPlanKey;
+
+        if (isSamePlanId || isSamePlanKey) {
+          return reply.status(400).send({
+            success: false,
+            alreadySubscribed: true,
+            message: 'You are already subscribed to this plan.',
+          });
+        }
+      }
     }
 
     const body = {

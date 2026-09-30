@@ -192,6 +192,7 @@ export const getAppProfile = async (request: FastifyRequest, reply: FastifyReply
           subscription: isActive,
           subscriptionStatus: isActive ? 'active' : 'inactive',
           subscriptionPlan: isActive ? String(user.subscriptionPlan || 'standard').toLowerCase() : 'free',
+          subscriptionPlanId: isActive ? ((user as any).subscriptionPlanId ? String((user as any).subscriptionPlanId) : (liveSub?.planId ? String(liveSub.planId) : null)) : null,
           subscriptionExpiry: (user as any).subscriptionExpiry || null,
           profileLimitCount,
           videoQuality: user.videoQuality || 'auto',
