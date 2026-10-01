@@ -6,6 +6,68 @@ import { Readable } from 'stream';
 import { logger } from './logger';
 import { SettingsModel } from '../models/Settings';
 
+/**
+ * Normalizes a DigitalOcean Spaces endpoint to the regional S3 base endpoint.
+ *
+ * Examples:
+ *   "https://tataiya.sgp1.digitaloceanspaces.com" -> "https://sgp1.digitaloceanspaces.com"
+ *   "https://tataiya.sgp1.cdn.digitaloceanspaces.com" -> "https://sgp1.digitaloceanspaces.com"
+ *   "sgp1.digitaloceanspaces.com" -> "https://sgp1.digitaloceanspaces.com"
+ *   "sgp1" -> "https://sgp1.digitaloceanspaces.com"
+ *   undefined / "" -> "https://<region>.digitaloceanspaces.com"
+ */
+export function normalizeSpacesEndpoint(
+  rawEndpoint: string | undefined,
+  region = 'nyc3',
+  spaceName = ''
+): string {
+  let ep = (rawEndpoint || '').trim();
+  const reg = (region || 'nyc3').trim().toLowerCase();
+
+  if (!ep) {
+    return `https://${reg}.digitaloceanspaces.com`;
+  }
+
+  // If user entered just a region name (e.g. "sgp1", "nyc3")
+  if (/^[a-z0-9-]+$/i.test(ep) && !ep.includes('.')) {
+    return `https://${ep.toLowerCase()}.digitaloceanspaces.com`;
+  }
+
+  if (!/^https?:\/\//i.test(ep)) {
+    ep = `https://${ep}`;
+  }
+
+  try {
+    const parsed = new URL(ep);
+    let host = parsed.hostname.toLowerCase();
+
+    // Strip CDN part
+    host = host.replace(/\.cdn\./, '.');
+
+    // Strip space/bucket name prefix if user typed "spaceName.region.digitaloceanspaces.com"
+    if (spaceName) {
+      const cleanSpace = spaceName.trim().toLowerCase();
+      if (host.startsWith(`${cleanSpace}.`)) {
+        host = host.slice(cleanSpace.length + 1);
+      }
+    }
+
+    // If host has a region before digitaloceanspaces.com (e.g. "sgp1.digitaloceanspaces.com")
+    const match = host.match(/([a-z0-9-]+)\.digitaloceanspaces\.com$/i);
+    if (match && match[1]) {
+      return `https://${match[1].toLowerCase()}.digitaloceanspaces.com`;
+    }
+
+    if (host === 'digitaloceanspaces.com') {
+      return `https://${reg}.digitaloceanspaces.com`;
+    }
+
+    return `https://${host}`;
+  } catch {
+    return `https://${reg}.digitaloceanspaces.com`;
+  }
+}
+
 export async function getS3Settings() {
   const settings = await SettingsModel.findOne().lean();
   const storageDriver =
@@ -24,19 +86,22 @@ export async function getS3Settings() {
       process.env.DO_SPACES_SECRET_KEY ||
       process.env.DO_SPACES_SECRET ||
       '';
-    const region =
+    const region = (
       (settings as any)?.doRegion ||
       process.env.DO_SPACES_REGION ||
-      'nyc3';
-    const bucket =
+      'nyc3'
+    ).trim().toLowerCase();
+    const bucket = (
       (settings as any)?.doSpaceName ||
       process.env.DO_SPACES_NAME ||
       process.env.DO_SPACES_BUCKET ||
-      '';
-    const endpoint =
+      ''
+    ).trim();
+    const rawEndpoint =
       (settings as any)?.doEndpoint ||
       process.env.DO_SPACES_ENDPOINT ||
       `https://${region}.digitaloceanspaces.com`;
+    const endpoint = normalizeSpacesEndpoint(rawEndpoint, region, bucket);
     const cdnUrl =
       ((settings as any)?.doCdnUrl || process.env.DO_SPACES_CDN_URL || '').replace(/\/$/, '');
 
@@ -93,8 +158,11 @@ export async function getS3Client() {
   const settings = await getS3Settings();
 
   if (settings.storageDriver === 'spaces') {
-    const endpoint =
-      settings.endpoint || `https://${settings.region}.digitaloceanspaces.com`;
+    const endpoint = normalizeSpacesEndpoint(
+      settings.endpoint,
+      settings.region,
+      settings.bucket
+    );
     return new S3Client({
       region: 'us-east-1',
       endpoint,
@@ -131,7 +199,10 @@ function buildPublicUrl(settings: Awaited<ReturnType<typeof getS3Settings>>, key
     const endpointHost = settings.endpoint
       ? settings.endpoint.replace(/^https?:\/\//, '').replace(/\/$/, '')
       : `${settings.region}.digitaloceanspaces.com`;
-    return `https://${settings.bucket}.${endpointHost}/${cleanKey}`;
+    const cleanHost = endpointHost.startsWith(`${settings.bucket}.`)
+      ? endpointHost
+      : `${settings.bucket}.${endpointHost}`;
+    return `https://${cleanHost}/${cleanKey}`;
   }
 
   if (settings.pathStyle) {
@@ -292,7 +363,10 @@ export async function getHlsPublicBaseUrl(): Promise<string> {
     const endpointHost = settings.endpoint
       ? settings.endpoint.replace(/^https?:\/\//, '').replace(/\/$/, '')
       : `${settings.region}.digitaloceanspaces.com`;
-    return `https://${settings.bucket}.${endpointHost}`;
+    const cleanHost = endpointHost.startsWith(`${settings.bucket}.`)
+      ? endpointHost
+      : `${settings.bucket}.${endpointHost}`;
+    return `https://${cleanHost}`;
   }
   if (settings.pathStyle) {
     return `https://s3.${settings.region}.amazonaws.com/${settings.bucket}`;
@@ -390,11 +464,12 @@ export async function testStorageConnection(config?: {
   let bucketName: string;
 
   if (driver === 'spaces') {
-    const spaceName = config?.spaceName?.trim() || (savedSettings as any)?.doSpaceName || process.env.DO_SPACES_NAME || process.env.DO_SPACES_BUCKET || '';
-    const accessKey = config?.accessKey?.trim() || (savedSettings as any)?.doAccessKey || process.env.DO_SPACES_ACCESS_KEY || process.env.DO_SPACES_KEY || '';
-    const secretKey = config?.secretKey?.trim() || (savedSettings as any)?.doSecretKey || process.env.DO_SPACES_SECRET_KEY || process.env.DO_SPACES_SECRET || '';
-    const region = config?.region?.trim() || (savedSettings as any)?.doRegion || process.env.DO_SPACES_REGION || 'nyc3';
-    const endpoint = config?.endpoint?.trim() || (savedSettings as any)?.doEndpoint || process.env.DO_SPACES_ENDPOINT || `https://${region}.digitaloceanspaces.com`;
+    const spaceName = (config?.spaceName?.trim() || (savedSettings as any)?.doSpaceName || process.env.DO_SPACES_NAME || process.env.DO_SPACES_BUCKET || '').trim();
+    const accessKey = (config?.accessKey?.trim() || (savedSettings as any)?.doAccessKey || process.env.DO_SPACES_ACCESS_KEY || process.env.DO_SPACES_KEY || '').trim();
+    const secretKey = (config?.secretKey?.trim() || (savedSettings as any)?.doSecretKey || process.env.DO_SPACES_SECRET_KEY || process.env.DO_SPACES_SECRET || '').trim();
+    const region = (config?.region?.trim() || (savedSettings as any)?.doRegion || process.env.DO_SPACES_REGION || 'nyc3').trim().toLowerCase();
+    const rawEndpoint = config?.endpoint?.trim() || (savedSettings as any)?.doEndpoint || process.env.DO_SPACES_ENDPOINT || `https://${region}.digitaloceanspaces.com`;
+    const endpoint = normalizeSpacesEndpoint(rawEndpoint, region, spaceName);
 
     if (!spaceName || !accessKey || !secretKey) {
       return {
