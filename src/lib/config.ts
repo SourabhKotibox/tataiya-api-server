@@ -18,5 +18,5 @@ export const API_URL = (process.env.API_URL || 'https://tataiya.in/api').replace
  *
  * Example output: https://tataiya.in/api/share/64abc123...
  */
-export const buildShareUrl = (itemId: string): string =>
+export const buildShareUrl = (itemId: string, type: 'movie' | 'show' | string = 'movie'): string =>
   `${API_URL}/share/${itemId}`;

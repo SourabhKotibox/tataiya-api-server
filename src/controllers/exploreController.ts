@@ -1,9 +1,16 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { MovieModel } from '../models/Movie';
+import { TVShowModel } from '../models/TVShow';
 import { UserLikeModel } from '../models/UserLike';
 import { UserModel } from '../models/User';
 import { LanguageModel } from '../models/Language';
 import { logger } from '../lib/logger';
+import {
+  canAccessContent,
+  isContentLocked,
+  resolveEffectiveUserPlan,
+} from '../lib/subscriptionAccess';
+import { buildShareUrl } from '../lib/config';
 
 // How many extra items to fetch per page to survive deduplication filtering
 const FETCH_MULTIPLIER = 4;
@@ -22,8 +29,6 @@ const getOptionalUserId = (request: FastifyRequest): string | null => {
   }
 };
 
-import { buildShareUrl } from '../lib/config';
-
 // Helper to convert relative URLs to absolute URLs
 const toAbsoluteUrl = (request: FastifyRequest, url: string | null | undefined): string | null => {
   if (!url) return null;
@@ -38,50 +43,59 @@ const toAbsoluteUrl = (request: FastifyRequest, url: string | null | undefined):
   return `${baseUrl}${relPath}`;
 };
 
-// Helper function to map movie items for the explore feed
+// Helper function to map content items for the explore feed
 const mapContentItem = (
   request: FastifyRequest,
   item: any,
   likeCount = 0,
   isLikedByUser = false,
-) => ({
-  id: item._id.toString(),
-  title: item.title,
-  description: item.description,
-  shortDescription: item.shortDescription,
-  thumbnail: toAbsoluteUrl(request, item.thumbnail),
-  bannerImage: toAbsoluteUrl(request, item.bannerImage),
-  type: 'movie',
-  genres: (item.genres || []).map((g: any) => g.name || g),
-  genresText: (item.genres || []).map((g: any) => g.name || g).join(' & '),
-  languages: (item.languages || []).map((l: any) => l.name || l),
-  views: item.views || 0,
-  likeCount,
-  isLikedByUser,
-  shares: item.shares || 0,
-  shareUrl: buildShareUrl(item._id.toString()),
-  featured: item.featured,
-  trending: item.trending,
-  isNewContent: item.isNewContent,
-  rating: item.rating,
-  year: item.year,
-  duration: item.duration,
-  status: item.status,
-  createdAt: item.createdAt,
-  updatedAt: item.updatedAt,
-  videoUrl: toAbsoluteUrl(request, item.hlsUrl) || null,
-  trailerUrl: toAbsoluteUrl(request, item.trailerUrl) || null,
-  contentPlan: item.plan || 'free',
-});
+  userPlan = 'free',
+  type: 'movie' | 'show' = 'movie',
+) => {
+  const contentPlan = item.planRequired || item.plan || 'free';
+  const locked = isContentLocked(contentPlan, userPlan);
+  const accessible = canAccessContent(contentPlan, userPlan);
+  return {
+    id: item._id.toString(),
+    title: item.title,
+    description: item.description,
+    shortDescription: item.shortDescription,
+    thumbnail: toAbsoluteUrl(request, item.thumbnail),
+    bannerImage: toAbsoluteUrl(request, item.bannerImage),
+    type,
+    contentType: type === 'show' ? 'tvShow' : 'movie',
+    genres: (item.genres || []).map((g: any) => g.name || g),
+    genresText: (item.genres || []).map((g: any) => g.name || g).join(' & '),
+    languages: (item.languages || []).map((l: any) => l.name || l),
+    views: item.views || 0,
+    likeCount,
+    isLikedByUser,
+    shares: item.shares || 0,
+    shareUrl: buildShareUrl(item._id.toString(), type === "show" ? "show" : "movie"),
+    featured: item.featured,
+    trending: item.trending,
+    isNewContent: item.isNewContent,
+    rating: item.rating,
+    year: item.year,
+    duration: item.duration,
+    status: item.status,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    videoUrl: accessible ? (toAbsoluteUrl(request, item.hlsUrl) || null) : null,
+    trailerUrl: toAbsoluteUrl(request, item.trailerUrl) || null,
+    contentPlan,
+    planRequired: contentPlan,
+    isLocked: locked,
+  };
+};
 
-// Get explore page data (infinite scroll, movies only)
+// Get explore page data (infinite scroll, movies + tvShows)
 export const getExplore = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
     const query = request.query as {
       offset?: string;
       limit?: string;
       sort?: 'new' | 'trending' | 'views' | 'featured';
-      // Comma-separated contentIds already seen — frontend passes these for dedup across sessions
       seenIds?: string;
     };
 
@@ -94,8 +108,12 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
       ? query.seenIds.split(',').map(id => id.trim()).filter(Boolean)
       : [];
 
-    // Optional auth — used for isLikedByUser
+    // Optional auth — used for isLikedByUser + lock gating
     const userId = getOptionalUserId(request);
+    let userPlan = 'free';
+    if (userId) {
+      userPlan = await resolveEffectiveUserPlan(userId);
+    }
 
     let sortBy: any = {};
     let filter: any = { status: 'published' };
@@ -151,35 +169,57 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
     if (targetLanguageId) {
       langFilter.languages = targetLanguageId;
     }
-    let rawContents: any[] = await MovieModel.find(langFilter)
-      .sort(sortBy)
-      .skip(offset)
-      .limit(fetchLimit)
-      .populate('languages', 'name')
-      .populate('genres', 'name')
-      .lean();
-
-    logger.info(
-      { offset, limit, fetchLimit, raw: rawContents.length, hasLanguageFilter: !!targetLanguageId },
-      'Explore API raw fetch',
-    );
-
-    // If no movies found with language filter, try without it
-    if (rawContents.length === 0 && targetLanguageId) {
-      logger.info('No movies found with language filter, fetching all languages');
-      rawContents = await MovieModel.find(filter)
+    
+    // To properly support pagination when merging two collections, we fetch from offset 0
+    // to offset + fetchLimit from BOTH collections, merge/sort, and then slice.
+    const combinedLimit = offset + fetchLimit;
+    
+    const [rawMovies, rawShows] = await Promise.all([
+      MovieModel.find(langFilter)
         .sort(sortBy)
-        .skip(offset)
-        .limit(fetchLimit)
+        .limit(combinedLimit)
         .populate('languages', 'name')
         .populate('genres', 'name')
-        .lean();
-      
-      logger.info(
-        { offset, limit, fetchLimit, raw: rawContents.length },
-        'Explore API raw fetch (no language filter)',
-      );
-    }
+        .lean(),
+      TVShowModel.find(langFilter)
+        .sort(sortBy)
+        .limit(combinedLimit)
+        .populate('languages', 'name')
+        .populate('genres', 'name')
+        .lean()
+    ]);
+
+    // Tag items
+    const taggedMovies = rawMovies.map(m => ({ ...m, _type: 'movie' }));
+    const taggedShows = rawShows.map(s => ({ ...s, _type: 'show' }));
+
+    const merged = [...taggedMovies, ...taggedShows];
+    
+    // Sort in memory based on the requested sort
+    const sortField = Object.keys(sortBy)[0] || 'createdAt';
+    const sortDir = sortBy[sortField] === -1 ? -1 : 1;
+    
+    merged.sort((a: any, b: any) => {
+      // For 'trending', 'views', 'featured', sort by that field, then fallback to createdAt
+      if (sortField !== 'createdAt') {
+         const valA = a[sortField] || 0;
+         const valB = b[sortField] || 0;
+         if (valA !== valB) {
+            return sortDir === -1 ? (valB - valA) : (valA - valB);
+         }
+      }
+      // Fallback or explicit 'createdAt'
+      const timeA = new Date(a.createdAt || 0).getTime();
+      const timeB = new Date(b.createdAt || 0).getTime();
+      return sortDir === -1 ? (timeB - timeA) : (timeA - timeB);
+    });
+
+    const rawContents = merged.slice(offset, offset + fetchLimit);
+
+    logger.info(
+      { offset, limit, fetchLimit, raw: rawContents.length },
+      'Explore API raw fetch',
+    );
 
     // ── Deduplicate: remove items with same thumbnail OR same videoUrl ────────
     const seenThumbnails = new Set<string>();
@@ -219,19 +259,17 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
       const cid = content._id.toString();
       const likeCount: number = content.likes || 0;
       const isLikedByUser: boolean = likedContentIdSet.has(cid);
-      return mapContentItem(request, content, likeCount, isLikedByUser);
+      return mapContentItem(request, content, likeCount, isLikedByUser, userPlan, content._type || 'movie');
     });
 
     // nextOffset moves forward by the full raw fetch batch size (not just unique count)
-    // This ensures the next page never repeats items from this batch
     const nextOffset = offset + rawContents.length;
-    const hasMore = rawContents.length === fetchLimit; // more items exist in DB
+    const hasMore = rawContents.length === fetchLimit;
 
     reply.send({
       success: true,
       data: {
         items,
-        // Tell the client which IDs were shown (use these as seenIds next call)
         returnedIds: items.map(i => i.id),
         nextOffset,
         hasMore,

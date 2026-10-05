@@ -1,8 +1,10 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { MovieModel } from '../models/Movie';
+import { TVShowModel } from '../models/TVShow';
 import { GenreModel } from '../models/Genre';
 import { BannerModel } from '../models/Banner';
 import { logger } from '../lib/logger';
+import { isContentLocked } from '../lib/subscriptionAccess';
 
 const S3_PUBLIC_BASE =
   (process.env.AWS_S3_PUBLIC_BASE_URL || 'https://tatiyatv.s3.eu-north-1.amazonaws.com').replace(/\/$/, '');
@@ -43,9 +45,24 @@ const formatDuration = (duration: any): string => {
   return `${Math.round(n)}m`;
 };
 
+const isShowItem = (item: any) =>
+  item?._webKind === 'show' ||
+  item?.contentType === 'tvShow' ||
+  item?.contentType === 'show' ||
+  item?.type === 'show';
+
+const tagKind = (items: any[], kind: 'movie' | 'show') =>
+  (items || []).map((item) => ({ ...item, _webKind: kind }));
+
+const mergeRanked = (
+  movies: any[],
+  shows: any[],
+  sorter: (a: any, b: any) => number,
+  limit = 10
+) => tagKind(movies, 'movie').concat(tagKind(shows, 'show')).sort(sorter).slice(0, limit);
 
 // Standardized mapping for website ContentItem
-const mapContentItem = (item: any, isHero = false) => {
+const mapContentItem = (item: any, _isHero = false) => {
   let badge;
   if (item.featured && item.trending) badge = 'EXCLUSIVE';
   else if (item.trending) badge = 'TRENDING';
@@ -53,13 +70,22 @@ const mapContentItem = (item: any, isHero = false) => {
   else if (item.isNewContent) badge = 'NEW';
   else if (item.views > 1000) badge = 'HOT';
 
+  const planRequired = item.planRequired || 'free';
+  const locked = isContentLocked(planRequired, 'free'); // guest-safe list payload
+  const stream = locked
+    ? null
+    : (resolveMediaUrl(item.hlsUrl || item.videoUrl || '') || null);
+  const isShow = isShowItem(item);
+  const id = item._id?.toString?.() || String(item._id || item.id || '');
+
   return {
-    id: item._id.toString(),
+    id,
+    _id: id,
     title: item.title,
     poster: resolveMediaUrl(item.posterImage || item.thumbnail || ''),
     backdrop: resolveMediaUrl(item.bannerImage || item.thumbnail || ''),
-    type: 'movie',
-    contentType: 'movie',
+    type: isShow ? 'show' : 'movie',
+    contentType: isShow ? 'tvShow' : 'movie',
     year: item.year?.toString() || new Date(item.createdAt).getFullYear().toString(),
     createdAt: item.createdAt ? new Date(item.createdAt).toISOString() : undefined,
     duration: formatDuration(item.duration),
@@ -70,13 +96,16 @@ const mapContentItem = (item: any, isHero = false) => {
     badge,
     genres: (item.genres || []).map((g: any) => g?.name || g),
     trailerUrl: resolveMediaUrl(item.trailerUrl || '') || null,
-    hlsUrl: resolveMediaUrl(item.hlsUrl || item.videoUrl || '') || null,
-    videoUrl: resolveMediaUrl(item.videoUrl || item.hlsUrl || '') || null,
-    planRequired: item.planRequired || 'free',
-    isPremium: !!item.planRequired && String(item.planRequired).toLowerCase() !== 'free',
+    hlsUrl: stream,
+    videoUrl: stream,
+    planRequired,
+    isPremium: planRequired !== 'free',
+    isLocked: locked,
     trending: !!item.trending,
     isNewContent: !!item.isNewContent,
+    featured: !!item.featured,
     views: item.views || 0,
+    seasons: item.totalSeasons || undefined,
   };
 };
 
@@ -92,7 +121,7 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
     }
 
     // Shared projection to make queries extremely fast
-    const selectFields = 'title description shortDescription thumbnail bannerImage posterImage year rating ageRating duration imdbRating createdAt featured trending isNewContent views genres languages trailerUrl hlsUrl videoUrl planRequired';
+    const selectFields = 'title description shortDescription thumbnail bannerImage posterImage year rating ageRating duration imdbRating createdAt featured trending isNewContent views genres languages trailerUrl hlsUrl videoUrl planRequired totalSeasons';
 
     // Parallel fetching for genres to use in filtering
     const [actionGenre, dramaGenre] = await Promise.all([
@@ -110,17 +139,29 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
         }).sort({ position: 1, createdAt: -1 }).limit(10).lean();
 
         const contentIds = bannersRaw.map(b => b.contentId).filter(Boolean);
-        const movies = await MovieModel.find({ _id: { $in: contentIds } }).populate('genres', 'name').lean();
+        const [movies, tvShows] = await Promise.all([
+          MovieModel.find({ _id: { $in: contentIds } }).populate('genres', 'name').lean(),
+          TVShowModel.find({ _id: { $in: contentIds } }).populate('genres', 'name').lean()
+        ]);
 
         const contentMap = new Map();
         for (const movie of movies) {
-          contentMap.set(movie._id.toString(), movie);
+          contentMap.set(movie._id.toString(), { ...movie, contentType: 'movie' });
+        }
+        for (const show of tvShows) {
+          contentMap.set(show._id.toString(), { ...show, contentType: 'tvShow' });
         }
 
         return bannersRaw.map((banner: any) => {
           const content = banner.contentId ? contentMap.get(banner.contentId.toString()) : null;
           const bannerImage = resolveMediaUrl(banner.imageUrl || '');
           if (content) {
+            const planRequired = content.planRequired || 'free';
+            const locked = isContentLocked(planRequired, 'free');
+            const stream = locked
+              ? null
+              : (resolveMediaUrl(content.hlsUrl || content.videoUrl || '') || null);
+            const isShow = content.contentType === 'tvShow';
             return {
               id: content._id.toString(),
               title: banner.title || content.title,
@@ -128,8 +169,8 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
               backdrop:
                 bannerImage ||
                 resolveMediaUrl(content.bannerImage || content.thumbnail || ''),
-              type: 'movie',
-              contentType: 'movie',
+              type: isShow ? 'show' : 'movie',
+              contentType: isShow ? 'tvShow' : 'movie',
               year: content.year?.toString() || new Date(content.createdAt).getFullYear().toString(),
               duration: formatDuration(content.duration),
               imdbRating: content.imdbRating?.toString() || (content.rating || '8.0'),
@@ -139,11 +180,13 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
               badge: banner.type?.toUpperCase() || 'EXCLUSIVE',
               genres: (content.genres || []).map((g: any) => g?.name || g),
               trailerUrl: resolveMediaUrl(content.trailerUrl || '') || null,
-              hlsUrl: resolveMediaUrl(content.hlsUrl || content.videoUrl || '') || null,
-              videoUrl: resolveMediaUrl(content.videoUrl || content.hlsUrl || '') || null,
-              planRequired: content.planRequired || 'free',
-              isPremium: !!content.planRequired && String(content.planRequired).toLowerCase() !== 'free',
+              hlsUrl: stream,
+              videoUrl: stream,
+              planRequired,
+              isPremium: planRequired !== 'free',
+              isLocked: locked,
               isBanner: true,
+              seasons: content.totalSeasons || undefined,
             };
           } else {
             // Banner without linked content
@@ -169,49 +212,61 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
           }
         });
       })(),
-      // 1: Trending Now
+      // 1-2: Trending movies + series
       MovieModel.find({ status: 'published', trending: true }).sort({ views: -1, createdAt: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean(),
-      // 2: New Releases
+      TVShowModel.find({ status: 'published', trending: true }).sort({ views: -1, createdAt: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean(),
+      // 3-4: New releases movies + series
       MovieModel.find({ status: 'published', isNewContent: true }).sort({ createdAt: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean(),
-      // 3: Top Rated Movies
+      TVShowModel.find({ status: 'published', isNewContent: true }).sort({ createdAt: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean(),
+      // 5-6: Top rated movies + series
       MovieModel.find({ status: 'published' }).sort({ imdbRating: -1, views: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean(),
-      // 4: Action Movies
+      TVShowModel.find({ status: 'published' }).sort({ imdbRating: -1, views: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean(),
+      // 7: Action Movies
       actionGenre
         ? MovieModel.find({ status: 'published', genres: actionGenre._id }).sort({ views: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean()
         : Promise.resolve([]),
-      // 5: Drama Movies
+      // 8: Drama Movies
       dramaGenre
         ? MovieModel.find({ status: 'published', genres: dramaGenre._id }).sort({ views: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean()
-        : Promise.resolve([])
+        : Promise.resolve([]),
+      // 9: All published series
+      TVShowModel.find({ status: 'published' }).sort({ views: -1, createdAt: -1 }).select(selectFields).limit(20).populate('genres', 'name').lean(),
     ];
 
     const results = await Promise.all(queries);
 
     // Extract results
     let heroContent = (results[0] as any[]).filter(Boolean);
-    const trendingRaw = results[1] as any[];
-    const newReleasesRaw = results[2] as any[];
-    const topRatedRaw = results[3] as any[];
-    const actionMoviesRaw = results[4] as any[];
-    const dramaMoviesRaw = results[5] as any[];
+    const trendingMoviesRaw = results[1] as any[];
+    const trendingShowsRaw = results[2] as any[];
+    const newMoviesRaw = results[3] as any[];
+    const newShowsRaw = results[4] as any[];
+    const topMoviesRaw = results[5] as any[];
+    const topShowsRaw = results[6] as any[];
+    const actionMoviesRaw = results[7] as any[];
+    const dramaMoviesRaw = results[8] as any[];
+    const tvShowsRaw = results[9] as any[];
+
+    const byViews = (a: any, b: any) => (b.views || 0) - (a.views || 0) || +new Date(b.createdAt) - +new Date(a.createdAt);
+    const byCreated = (a: any, b: any) => +new Date(b.createdAt) - +new Date(a.createdAt);
+    const byRating = (a: any, b: any) => (b.imdbRating || 0) - (a.imdbRating || 0) || byViews(a, b);
 
     // Map raw data into frontend structure (heroContent is already mapped)
-    let trendingNow = trendingRaw.map((m: any) => mapContentItem(m));
-    let newReleases = newReleasesRaw.map((m: any) => mapContentItem(m));
-    const topRated = topRatedRaw.map((m: any) => mapContentItem(m));
+    let trendingNow = mergeRanked(trendingMoviesRaw, trendingShowsRaw, byViews).map((m: any) => mapContentItem(m));
+    let newReleases = mergeRanked(newMoviesRaw, newShowsRaw, byCreated).map((m: any) => mapContentItem(m));
+    const topRated = mergeRanked(topMoviesRaw, topShowsRaw, byRating).map((m: any) => mapContentItem(m));
     const actionMovies = actionMoviesRaw.map((m: any) => mapContentItem(m));
     const dramaMovies = dramaMoviesRaw.map((m: any) => mapContentItem(m));
+    const tvShows = tagKind(tvShowsRaw, 'show').map((m: any) => mapContentItem(m));
 
     // Fallbacks so New & Hot / Trending never render empty when flags are sparse
     if (newReleases.length === 0 && topRated.length > 0) {
-      newReleases = topRated.slice(0, 10).map((m: any, i: number) => ({ ...m, badge: m.badge || 'NEW' }));
+      newReleases = topRated.slice(0, 10).map((m: any) => ({ ...m, badge: m.badge || 'NEW' }));
     }
     if (trendingNow.length === 0 && topRated.length > 0) {
       trendingNow = topRated.slice(0, 10).map((m: any) => ({ ...m, badge: m.badge || 'TRENDING' }));
     }
 
-    // Keep admin-created banners even if they are image-only (no trailer/video yet).
-    // Only fill empty slots with playable movies when there are no banners at all.
     const playablePool = [
       ...topRated,
       ...trendingNow,
@@ -222,7 +277,6 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
     const withVideo = heroContent.filter((h: any) => h.trailerUrl || h.hlsUrl || h.videoUrl);
 
     if (bannerSlides.length > 0) {
-      // Prefer banners first; append extra playable movies if needed
       const ids = new Set(bannerSlides.map((h: any) => h.id));
       heroContent = [
         ...bannerSlides,
@@ -249,6 +303,7 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
         topRated,
         actionMovies,
         dramaMovies,
+        tvShows,
       }
     };
 
@@ -265,8 +320,14 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
 
 export const getWebAllContent = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
-    const movies = await MovieModel.find({ status: 'published' }).lean();
-    return reply.send({ success: true, data: { movies } });
+    const selectFields = 'title description shortDescription thumbnail bannerImage posterImage year rating ageRating duration imdbRating createdAt featured trending isNewContent views genres languages trailerUrl hlsUrl videoUrl planRequired totalSeasons';
+    const [moviesRaw, showsRaw] = await Promise.all([
+      MovieModel.find({ status: 'published' }).select(selectFields).limit(300).sort({ createdAt: -1 }).populate('genres', 'name').lean(),
+      TVShowModel.find({ status: 'published' }).select(selectFields).limit(300).sort({ createdAt: -1 }).populate('genres', 'name').lean(),
+    ]);
+    const movies = tagKind(moviesRaw, 'movie').map((m: any) => mapContentItem(m));
+    const tvShows = tagKind(showsRaw, 'show').map((m: any) => mapContentItem(m));
+    return reply.send({ success: true, data: { movies, tvShows } });
   } catch (error: any) {
     logger.error({ error }, 'Error fetching web all content API data');
     return reply.status(500).send({ success: false, message: 'Internal server error', error: error.message });

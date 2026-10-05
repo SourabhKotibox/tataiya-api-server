@@ -22,6 +22,8 @@ import mediaRoutes from './media';
 import appSettingsRoutes from './appSettings';
 import dashboardRoutes from './dashboard';
 import movieRoutes from './movie';
+import tvShowRoutes from './tvShows';
+import episodeRoutes from './episodes';
 import adminUsersRoutes from './adminUsers';
 import sectionsRoutes from './sections';
 import countriesRoutes from './countries';
@@ -45,6 +47,7 @@ import { getWebHome, getWebAllContent } from '../controllers/webHomeController';
 import { getWebBrowse } from '../controllers/webBrowseController';
 import { getWebDetail } from '../controllers/webDetailController';
 import { getMovieDetail } from '../controllers/appMovieController';
+import { getSeriesDetail } from '../controllers/appSeriesController';
 import { checkForceUpdate } from '../controllers/appForceUpdateController';
 import adRoutes from './ad';
 import adminNotificationsRoutes from './adminNotifications';
@@ -79,6 +82,8 @@ const router: FastifyPluginAsync = async (fastify) => {
   fastify.register(appSettingsRoutes, { prefix: '/app-settings' });
   fastify.register(dashboardRoutes);
   fastify.register(movieRoutes, { prefix: '/movies' });
+  fastify.register(tvShowRoutes, { prefix: '/tv-shows' });
+  fastify.register(episodeRoutes, { prefix: '/episodes' });
   fastify.register(adminUsersRoutes, { prefix: '/admin-users' });
   fastify.register(sectionsRoutes, { prefix: '/sections' });
   fastify.register(countriesRoutes, { prefix: '/countries' });
@@ -118,6 +123,10 @@ const router: FastifyPluginAsync = async (fastify) => {
 
   // Mobile movie detail page
   fastify.get('/app/movies/:id', getMovieDetail);
+
+  // Mobile/Web TV Show / Series detail page
+  fastify.get('/app/series/:id', getSeriesDetail);
+  fastify.get('/app/tv-shows/:id', getSeriesDetail);
 
   // Force / optional app update check (public — call on app launch)
   fastify.get('/app/force-update', checkForceUpdate);

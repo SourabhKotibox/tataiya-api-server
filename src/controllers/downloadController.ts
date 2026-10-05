@@ -231,17 +231,19 @@ export const checkDownloadEligibility = async (request: FastifyRequest, reply: F
       return reply.status(401).send({ success: false, message: 'Unauthorized' });
     }
 
-    const q = request.query as { contentId?: string; id?: string };
-    const contentId = String(q.contentId || q.id || '').trim();
-    if (!contentId || !mongoose.Types.ObjectId.isValid(contentId)) {
+    const q = request.query as { contentId?: string; id?: string; episodeId?: string; contentType?: string };
+    const lookupId = String(q.episodeId || q.contentId || q.id || '').trim();
+    if (!lookupId || !mongoose.Types.ObjectId.isValid(lookupId)) {
       return reply.status(400).send({ success: false, message: 'Invalid or missing contentId' });
     }
 
     const limits = await resolveDownloadLimits(userPayload.id);
-    const movie = await MovieModel.findById(contentId).lean();
-    if (!movie || movie.status !== 'published') {
-      return reply.status(404).send({ success: false, message: 'Movie not found' });
+    const { resolveContent } = await import('../lib/contentResolver');
+    const resolved = await resolveContent(lookupId, q.episodeId ? 'episode' : q.contentType);
+    if (!resolved || (resolved.doc.status && resolved.doc.status !== 'published')) {
+      return reply.status(404).send({ success: false, message: 'Content not found' });
     }
+    const movie = resolved.doc;
 
     const downloadAllowed = (movie as any).downloadAllowed !== false;
     const hasFile = movieHasOfflineFile(movie);
@@ -250,7 +252,7 @@ export const checkDownloadEligibility = async (request: FastifyRequest, reply: F
     });
     const alreadyDownloaded = !!(await UserDownloadModel.findOne({
       userId: new mongoose.Types.ObjectId(userPayload.id),
-      contentId,
+      contentId: lookupId,
     }).lean());
 
     const canDownload =
@@ -258,10 +260,10 @@ export const checkDownloadEligibility = async (request: FastifyRequest, reply: F
 
     let reason: string | null = null;
     if (!limits.allowed) reason = limits.reason || 'Downloads not allowed';
-    else if (!downloadAllowed) reason = 'Downloading is disabled for this movie.';
+    else if (!downloadAllowed) reason = 'Downloading is disabled for this content.';
     else if (!hasFile) {
       reason =
-        'No progressive MP4 available for offline download. HLS/trailer cannot be used — attach the full movie file.';
+        'No progressive MP4 available for offline download. HLS/trailer cannot be used — attach the full video file.';
     } else if (!alreadyDownloaded && used >= limits.max) {
       reason = `Download limit reached (${limits.max}). Remove an old download or upgrade.`;
     }
@@ -271,8 +273,9 @@ export const checkDownloadEligibility = async (request: FastifyRequest, reply: F
     return reply.send({
       success: true,
       data: {
-        contentId,
-        contentType: 'movie',
+        contentId: q.contentId || lookupId,
+        episodeId: q.episodeId,
+        contentType: resolved.type === 'Movie' ? 'movie' : 'series',
         canDownload,
         downloadAllowed,
         downloadEnabled: limits.allowed,
@@ -312,17 +315,19 @@ export const requestDownload = async (request: FastifyRequest, reply: FastifyRep
 
     const body = (request.body || {}) as {
       contentId?: string;
-      contentType?: 'movie';
+      episodeId?: string;
+      contentType?: 'movie' | 'series' | string;
       quality?: string;
       profileId?: string;
     };
+    const lookupId = String(body.episodeId || body.contentId || '').trim();
     const contentId = String(body.contentId || '').trim();
 
-    if (!contentId || !mongoose.Types.ObjectId.isValid(contentId)) {
+    if (!lookupId || !mongoose.Types.ObjectId.isValid(lookupId)) {
       return reply.status(400).send({ success: false, message: 'Invalid contentId' });
     }
 
-    const existing = await UserDownloadModel.findOne({ userId: userObjectId, contentId }).lean();
+    const existing = await UserDownloadModel.findOne({ userId: userObjectId, contentId: lookupId }).lean();
     if (!existing) {
       const count = await UserDownloadModel.countDocuments({ userId: userObjectId });
       if (count >= limits.max) {
@@ -336,15 +341,17 @@ export const requestDownload = async (request: FastifyRequest, reply: FastifyRep
       }
     }
 
-    const movie = await MovieModel.findById(contentId).lean();
-    if (!movie || movie.status !== 'published') {
-      return reply.status(404).send({ success: false, message: 'Movie not found' });
+    const { resolveContent } = await import('../lib/contentResolver');
+    const resolved = await resolveContent(lookupId, body.episodeId ? 'episode' : body.contentType);
+    if (!resolved || (resolved.doc.status && resolved.doc.status !== 'published')) {
+      return reply.status(404).send({ success: false, message: 'Content not found' });
     }
+    const movie = resolved.doc;
 
     if ((movie as any).downloadAllowed === false) {
       return reply.status(400).send({
         success: false,
-        message: 'Downloading is disabled for this movie.',
+        message: 'Downloading is disabled for this content.',
         code: 'DOWNLOAD_DISABLED',
       });
     }
@@ -366,22 +373,23 @@ export const requestDownload = async (request: FastifyRequest, reply: FastifyRep
         success: false,
         code: 'NO_OFFLINE_FILE',
         message: hasHls
-          ? 'This movie is streaming-only (HLS). A progressive MP4 is required for offline download — re-upload the full movie file.'
-          : 'No full movie file available for offline download. Trailer cannot be used — attach the full movie video.',
+          ? 'This content is streaming-only (HLS). A progressive MP4 is required for offline download.'
+          : 'No full video file available for offline download.',
       });
     }
 
     const qualities = mapQualities(movie, request, allowedQualities);
 
     const downloadDoc: any = await UserDownloadModel.findOneAndUpdate(
-      { userId: userObjectId, contentId },
+      { userId: userObjectId, contentId: lookupId },
       {
         $set: {
           quality: preferredQuality || existing?.quality || null,
+          contentModelType: resolved.type,
           status: existing?.status === 'completed' ? 'completed' : 'pending',
           ...(body.profileId !== undefined ? { profileId: body.profileId || null } : {}),
         },
-        $setOnInsert: { contentModelType: 'Movie', progress: 0 },
+        $setOnInsert: { progress: 0 },
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
@@ -394,8 +402,9 @@ export const requestDownload = async (request: FastifyRequest, reply: FastifyRep
       data: {
         id: downloadDoc._id.toString(),
         userId,
-        contentId,
-        contentType: 'movie',
+        contentId: contentId || lookupId,
+        episodeId: body.episodeId,
+        contentType: resolved.type === 'Movie' ? 'movie' : 'series',
         title: movie.title,
         thumbnail: toAbsoluteUrl(request, movie.thumbnail || '') || '',
         duration: movie.duration || 0,
@@ -448,13 +457,17 @@ export const getDownloadList = async (request: FastifyRequest, reply: FastifyRep
     const result = [];
 
     for (const dl of downloads) {
-      const movie = await MovieModel.findById(dl.contentId).lean();
-      if (!movie || movie.status !== 'published') continue;
+      const { resolveContent } = await import('../lib/contentResolver');
+      const resolved = await resolveContent(dl.contentId.toString(), dl.contentModelType);
+      if (!resolved) continue;
+      const movie = resolved.doc;
+      if (movie.status && movie.status !== 'published') continue;
 
       result.push({
         id: dl._id.toString(),
-        contentId: dl.contentId.toString(),
-        contentType: 'movie',
+        contentId: resolved.type === 'Episode' ? movie.tvShowId?.toString() : dl.contentId.toString(),
+        episodeId: resolved.type === 'Episode' ? dl.contentId.toString() : undefined,
+        contentType: resolved.type === 'Movie' ? 'movie' : 'series',
         title: movie.title,
         thumbnail: toAbsoluteUrl(request, movie.thumbnail || '') || '',
         duration: movie.duration || 0,

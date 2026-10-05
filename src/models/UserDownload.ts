@@ -5,7 +5,7 @@ export type DownloadStatus = 'pending' | 'downloading' | 'completed' | 'failed' 
 export interface IUserDownload extends Document {
   userId: Types.ObjectId;
   contentId: Types.ObjectId;
-  contentModelType: 'Movie';
+  contentModelType: 'Movie' | 'TVShow' | 'Episode';
   profileId?: string | null;
   /** Selected quality key e.g. 720p / 1080p / auto */
   quality?: string | null;
@@ -21,7 +21,7 @@ const UserDownloadSchema = new Schema<IUserDownload>(
   {
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     contentId: { type: Schema.Types.ObjectId, required: true, index: true },
-    contentModelType: { type: String, enum: ['Movie'], required: true },
+    contentModelType: { type: String, enum: ['Movie', 'TVShow', 'Episode'], required: true },
     profileId: { type: String, default: null, index: true },
     quality: { type: String, default: null },
     status: {
