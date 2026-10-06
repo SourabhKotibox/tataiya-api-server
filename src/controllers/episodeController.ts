@@ -31,11 +31,15 @@ export const getAllEpisodes = async (request: FastifyRequest, reply: FastifyRepl
           typeFilter === 'drama' || typeFilter === 'series' || typeFilter === 'show'
             ? 'tvShow'
             : typeFilter;
-        const tvShowIds = await TVShowModel.find({ contentType: normalizedType })
-          .select('_id')
-          .lean()
-          .then((contents) => contents.map((c) => c._id));
-        filter.tvShowId = { $in: tvShowIds };
+        if (normalizedType === 'tvShow') {
+          const tvShowIds = await TVShowModel.find({ contentType: 'tvShow' })
+            .select('_id')
+            .lean()
+            .then((contents) => contents.map((c) => c._id));
+          filter.tvShowId = { $in: tvShowIds };
+        } else {
+          filter.tvShowId = { $in: [] };
+        }
       }
     }
 
@@ -127,11 +131,19 @@ export const createEpisode = async (request: FastifyRequest, reply: FastifyReply
   try {
     const body = request.body as any;
 
-    // Match movies: transcode local MP4/media files (hlsUrl or sourceVideoUrl) into HLS
-    const videoPath = (body.sourceVideoUrl || body.hlsUrl || '').trim();
-    const shouldProcessHls = isRawLocalVideo(videoPath);
-    if (shouldProcessHls) {
+    const submittedVideoUrl = String(body.sourceVideoUrl || body.videoFilePath || body.videoUrl || body.hlsUrl || '').trim();
+    const isHlsPlaylist = /\.m3u8(?:[?#]|$)/i.test(submittedVideoUrl);
+    const hlsUrl = String(body.hlsUrl || (body.videoUploadType === 'hls' || isHlsPlaylist ? submittedVideoUrl : '')).trim();
+    const videoPath = hlsUrl ? '' : submittedVideoUrl;
+    const shouldProcessHls = !!videoPath && !isHlsPlaylist &&
+      (isRawLocalVideo(videoPath) || body.videoUploadType === 'local');
+    if (hlsUrl) {
+      body.hlsUrl = hlsUrl;
+    } else if (videoPath) {
       body.sourceVideoUrl = videoPath;
+      body.hlsUrl = undefined;
+    }
+    if (shouldProcessHls) {
       body.processingStatus = 'queued';
     } else {
       body.processingStatus = 'ready';
@@ -145,6 +157,12 @@ export const createEpisode = async (request: FastifyRequest, reply: FastifyReply
     if (shouldProcessHls && videoPath) {
       import('../services/videoProcessor').then(({ processEpisodeInBackground }) => {
         processEpisodeInBackground(episode._id as Types.ObjectId, videoPath);
+      }).catch(async (error) => {
+        logger.error({ error, episodeId: episode._id }, 'Failed to load episode HLS processor');
+        await EpisodeModel.findByIdAndUpdate(episode._id, {
+          processingStatus: 'failed',
+          processingError: error instanceof Error ? error.message : 'Failed to load episode HLS processor',
+        });
       });
     }
 
@@ -177,14 +195,40 @@ export const updateEpisode = async (request: FastifyRequest, reply: FastifyReply
       return reply.status(404).send({ success: false, error: 'Episode not found' });
     }
 
-    const videoPath = (body.sourceVideoUrl || body.hlsUrl || '').trim();
-    const prevPath = String((existingEpisode as any).sourceVideoUrl || (existingEpisode as any).hlsUrl || '');
-    const shouldProcessHls = isRawLocalVideo(videoPath) && videoPath !== prevPath;
-    if (shouldProcessHls) {
-      body.sourceVideoUrl = videoPath;
-      body.processingStatus = 'queued';
-    } else if (body.sourceVideoUrl || body.hlsUrl) {
-      body.processingStatus = 'ready';
+    const hasVideoUpdate = ['sourceVideoUrl', 'videoFilePath', 'videoUrl', 'hlsUrl']
+      .some((key) => Object.prototype.hasOwnProperty.call(body, key));
+    let videoPath = '';
+    let shouldProcessHls = false;
+    if (hasVideoUpdate) {
+      const submittedVideoUrl = String(body.sourceVideoUrl || body.videoFilePath || body.videoUrl || body.hlsUrl || '').trim();
+      const isHlsPlaylist = /\.m3u8(?:[?#]|$)/i.test(submittedVideoUrl);
+      const hlsUrl = String(body.hlsUrl || (body.videoUploadType === 'hls' || isHlsPlaylist ? submittedVideoUrl : '')).trim();
+      videoPath = hlsUrl ? '' : submittedVideoUrl;
+      const previousSource = String((existingEpisode as any).sourceVideoUrl || '');
+      const previousHlsUrl = String((existingEpisode as any).hlsUrl || '');
+      shouldProcessHls = !!videoPath && !isHlsPlaylist && videoPath !== previousSource &&
+        (isRawLocalVideo(videoPath) || body.videoUploadType === 'local');
+
+      if (hlsUrl) {
+        body.hlsUrl = hlsUrl;
+        if (hlsUrl !== previousHlsUrl) {
+          body.sourceVideoUrl = null;
+          body.videoQualities = [];
+          body.processingStatus = 'ready';
+        }
+      } else if (videoPath) {
+        body.sourceVideoUrl = videoPath;
+        if (videoPath !== previousSource) {
+          body.hlsUrl = null;
+          body.videoQualities = [];
+          body.processingStatus = shouldProcessHls ? 'queued' : 'ready';
+        }
+      } else {
+        body.sourceVideoUrl = null;
+        body.hlsUrl = null;
+        body.videoQualities = [];
+        body.processingStatus = 'ready';
+      }
     }
 
     const episode = await EpisodeModel.findByIdAndUpdate(
@@ -208,6 +252,12 @@ export const updateEpisode = async (request: FastifyRequest, reply: FastifyReply
     if (shouldProcessHls && videoPath) {
       import('../services/videoProcessor').then(({ processEpisodeInBackground }) => {
         processEpisodeInBackground(new Types.ObjectId(id), videoPath);
+      }).catch(async (error) => {
+        logger.error({ error, episodeId: id }, 'Failed to load episode HLS processor');
+        await EpisodeModel.findByIdAndUpdate(id, {
+          processingStatus: 'failed',
+          processingError: error instanceof Error ? error.message : 'Failed to load episode HLS processor',
+        });
       });
     }
 
@@ -297,11 +347,15 @@ export const getSeasons = async (request: FastifyRequest, reply: FastifyReply) =
           typeFilter === 'drama' || typeFilter === 'series' || typeFilter === 'show'
             ? 'tvShow'
             : typeFilter;
-        const tvShowIds = await TVShowModel.find({ contentType: normalizedType })
-          .select('_id')
-          .lean()
-          .then((contents) => contents.map((c) => c._id));
-        matchFilter.tvShowId = { $in: tvShowIds };
+        if (normalizedType === 'tvShow') {
+          const tvShowIds = await TVShowModel.find({ contentType: 'tvShow' })
+            .select('_id')
+            .lean()
+            .then((contents) => contents.map((c) => c._id));
+          matchFilter.tvShowId = { $in: tvShowIds };
+        } else {
+          matchFilter.tvShowId = { $in: [] };
+        }
       }
     }
 

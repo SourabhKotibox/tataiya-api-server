@@ -78,6 +78,39 @@ const ensureDir = (dir: string) => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 };
 
+const countFiles = (folderPath: string): number =>
+  fs.readdirSync(folderPath, { withFileTypes: true }).reduce((count, entry) => {
+    const entryPath = path.join(folderPath, entry.name);
+    return count + (entry.isDirectory() ? countFiles(entryPath) : entry.isFile() ? 1 : 0);
+  }, 0);
+
+const validateEpisodeHlsOutput = (
+  hlsFolder: string,
+  qualities: ReadonlyArray<typeof HLS_QUALITY_LADDER[number]>
+) => {
+  const masterPath = path.join(hlsFolder, 'master.m3u8');
+  if (!fs.existsSync(masterPath)) throw new Error('Episode HLS master playlist was not generated');
+  const masterLines = fs.readFileSync(masterPath, 'utf8').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (!masterLines.includes('#EXTM3U')) throw new Error('Episode HLS master playlist is invalid');
+
+  for (const quality of qualities) {
+    const variantPath = path.join(hlsFolder, quality.name, 'playlist.m3u8');
+    if (!masterLines.includes(`${quality.name}/playlist.m3u8`) || !fs.existsSync(variantPath)) {
+      throw new Error(`Episode HLS ${quality.name} playlist is missing`);
+    }
+    const variantLines = fs.readFileSync(variantPath, 'utf8').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const segments = variantLines.filter((line) => !line.startsWith('#'));
+    if (!variantLines.includes('#EXTM3U') || !variantLines.includes('#EXT-X-ENDLIST') || segments.length === 0) {
+      throw new Error(`Episode HLS ${quality.name} playlist is incomplete`);
+    }
+    for (const segment of segments) {
+      if (!fs.existsSync(path.resolve(path.dirname(variantPath), segment))) {
+        throw new Error(`Episode HLS segment is missing: ${quality.name}/${segment}`);
+      }
+    }
+  }
+};
+
 export const toLocalUploadPath = (urlPath: string): string | null => {
   if (!urlPath) return null;
   let relPath = urlPath;
@@ -98,6 +131,7 @@ const getFolderSize = (folderPath: string): number => {
       }
       return size;
     };
+
     return walk(folderPath);
   } catch { return 0; }
 };
@@ -290,8 +324,9 @@ const transcodeHlsSequential = async (opts: {
       '-profile:v',    'main',
       '-preset',       'ultrafast',
       '-c:a',          'aac',
-      '-b:a',          q.audioBitrate,
-      '-ar',           '48000',
+      ...(folderType === 'episodes'
+        ? ['-profile:a', 'aac_low', '-ac', '2', '-b:a', '128k', '-ar', '44100']
+        : ['-b:a', q.audioBitrate, '-ar', '48000']),
       '-f',            'hls',
       '-hls_time',     '6',
       '-hls_playlist_type', 'vod',
@@ -305,6 +340,7 @@ const transcodeHlsSequential = async (opts: {
 
   // Rebuild master.m3u8
   writeMasterPlaylist(hlsFolder, qualities);
+  if (folderType === 'episodes') validateEpisodeHlsOutput(hlsFolder, qualities);
 
   const out = await buildLocalHlsOutput({ qualities, hlsFolder, localUrlBase, movieId, folderType });
   return {
@@ -343,8 +379,12 @@ const buildLocalHlsOutput = async (opts: {
   const s3Active = await isS3Configured();
 
   if (s3Active) {
-    const s3Prefix = `hls/${folderType}/${movieId}`;
-    await uploadHlsFolderToS3(hlsFolder, s3Prefix);
+    const revision = folderType === 'episodes' ? `/${Date.now()}` : '';
+    const s3Prefix = `hls/${folderType}/${movieId}${revision}`;
+    const uploadedCount = await uploadHlsFolderToS3(hlsFolder, s3Prefix);
+    if (folderType === 'episodes' && uploadedCount !== countFiles(hlsFolder)) {
+      throw new Error('Episode HLS upload to remote storage is incomplete');
+    }
     const baseUrl = await getHlsPublicBaseUrl();
     const masterUrl = `${baseUrl}/${s3Prefix}/master.m3u8`;
     const renditions = qualities.map((q) => ({

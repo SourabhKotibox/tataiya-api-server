@@ -240,8 +240,12 @@ export const getWatchData = async (request: FastifyRequest, reply: FastifyReply)
       const synced = await autoDetectAndSyncQualities(playbackTarget._id, playbackType);
       if (synced) playbackTarget = synced;
       else {
-        const Model = playbackType === 'episode' ? EpisodeModel : playbackType === 'tvShow' ? TVShowModel : MovieModel;
-        const refreshed = await Model.findById(playbackTarget._id).lean();
+        const refreshed =
+          playbackType === 'episode'
+            ? await EpisodeModel.findById(playbackTarget._id).lean()
+            : playbackType === 'tvShow'
+              ? await TVShowModel.findById(playbackTarget._id).lean()
+              : await MovieModel.findById(playbackTarget._id).lean();
         if (refreshed) playbackTarget = refreshed;
       }
     } catch (syncErr) {
@@ -284,12 +288,14 @@ export const getWatchData = async (request: FastifyRequest, reply: FastifyReply)
     // ── Fetch Related Content ─────────────────────────────────────────────
     let relatedContents: any[] = [];
     if (content.genres && content.genres.length > 0) {
-      const RelatedModel = isSeries ? TVShowModel : MovieModel;
-      const related = await RelatedModel.find({
+      const relatedFilter = {
         _id: { $ne: content._id },
-        status: 'published',
+        status: 'published' as const,
         genres: { $in: content.genres },
-      }).select('title thumbnail duration type').limit(5).lean();
+      };
+      const related = isSeries
+        ? await TVShowModel.find(relatedFilter).select('title thumbnail duration type').limit(5).lean()
+        : await MovieModel.find(relatedFilter).select('title thumbnail duration type').limit(5).lean();
       relatedContents = related.map(r => ({
         id: r._id.toString(),
         title: r.title,
@@ -316,7 +322,14 @@ export const getWatchData = async (request: FastifyRequest, reply: FastifyReply)
       }
     }
 
-    const playableHls = playbackTarget.hlsUrl || playbackTarget.videoUrl || playbackTarget.sourceVideoUrl || null;
+    const episodeSourceUrl = playbackType === 'episode'
+      ? String(playbackTarget.sourceVideoUrl || '')
+      : '';
+    const episodeSourceIsPlaylist = /\.m3u8(?:[?#]|$)/i.test(episodeSourceUrl);
+    const episodeSourceIsRemote = /^https?:\/\//i.test(episodeSourceUrl);
+    const playableHls = playbackType === 'episode'
+      ? playbackTarget.hlsUrl || (episodeSourceIsPlaylist || episodeSourceIsRemote ? episodeSourceUrl : null)
+      : playbackTarget.hlsUrl || playbackTarget.videoUrl || playbackTarget.sourceVideoUrl || null;
     const currentVideo = {
       id: playbackTarget._id.toString(),
       title: isSeries && currentEpisodeDoc
@@ -328,6 +341,8 @@ export const getWatchData = async (request: FastifyRequest, reply: FastifyReply)
       isFree: contentPlan === 'free' || !!currentEpisodeDoc?.isFree,
       isLocked: !isAccessible,
       hlsUrl: isAccessible ? toAbsoluteUrl(request, playableHls) : null,
+      processingStatus: playbackType === 'episode' ? playbackTarget.processingStatus : null,
+      processingError: playbackType === 'episode' ? playbackTarget.processingError || null : null,
       trailerUrl: toAbsoluteUrl(request, currentEpisodeDoc?.trailerUrl || content.trailerUrl),
       videoSettings: isAccessible ? buildNamedQualities(request, playableHls, playbackTarget.videoQualities || content.videoQualities, userPlan) : null,
       watchProgress,

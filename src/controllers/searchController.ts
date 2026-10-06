@@ -171,7 +171,7 @@ export const getSearchPage = async (request: FastifyRequest, reply: FastifyReply
     if (genreIds.length > 0) queryOptions.push({ genres: { $in: genreIds } });
 
     const baseFilter = {
-      status: 'published',
+      status: 'published' as const,
       ...(targetLanguageId ? { languages: targetLanguageId } : {}),
       $or: queryOptions
     };

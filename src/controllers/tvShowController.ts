@@ -1,9 +1,149 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
+import mongoose from 'mongoose';
 import { TVShowModel } from '../models/TVShow';
 import { EpisodeModel } from '../models/Episode';
 import { SectionModel } from '../models/Section';
+import { GenreModel } from '../models/Genre';
+import { LanguageModel } from '../models/Language';
+import { CategoryModel } from '../models/Category';
 import { logger } from '../lib/logger';
 import { sendApprovalEmail, sendRejectionEmail } from '../lib/email';
+
+async function resolveGenreIds(input: any): Promise<mongoose.Types.ObjectId[]> {
+  if (!input) return [];
+  let list: any[] = [];
+  if (Array.isArray(input)) {
+    list = input;
+  } else if (typeof input === 'string') {
+    const trimmed = input.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const normalized = trimmed.replace(/'/g, '"');
+        const parsed = JSON.parse(normalized);
+        if (Array.isArray(parsed)) list = parsed;
+      } catch {
+        list = trimmed.slice(1, -1).split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+      }
+    } else {
+      list = trimmed.split(',').map(s => s.trim()).filter(Boolean);
+    }
+  }
+
+  const resultIds: mongoose.Types.ObjectId[] = [];
+  for (const item of list) {
+    if (!item) continue;
+    const val = typeof item === 'object' && item._id ? String(item._id) : String(item).trim();
+    if (!val) continue;
+
+    if (mongoose.Types.ObjectId.isValid(val) && String(new mongoose.Types.ObjectId(val)) === val) {
+      resultIds.push(new mongoose.Types.ObjectId(val));
+    } else {
+      let genreDoc = await GenreModel.findOne({ name: { $regex: new RegExp(`^${val}$`, 'i') } });
+      if (!genreDoc) {
+        try {
+          genreDoc = await GenreModel.create({ name: val, active: true, status: 'published' });
+        } catch {
+          genreDoc = await GenreModel.findOne({ name: { $regex: new RegExp(`^${val}$`, 'i') } });
+        }
+      }
+      if (genreDoc?._id) {
+        resultIds.push(genreDoc._id as mongoose.Types.ObjectId);
+      }
+    }
+  }
+  return resultIds;
+}
+
+async function resolveLanguageIds(input: any): Promise<mongoose.Types.ObjectId[]> {
+  if (!input) return [];
+  let list: any[] = [];
+  if (Array.isArray(input)) {
+    list = input;
+  } else if (typeof input === 'string') {
+    const trimmed = input.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const normalized = trimmed.replace(/'/g, '"');
+        const parsed = JSON.parse(normalized);
+        if (Array.isArray(parsed)) list = parsed;
+      } catch {
+        list = trimmed.slice(1, -1).split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+      }
+    } else {
+      list = trimmed.split(',').map(s => s.trim()).filter(Boolean);
+    }
+  }
+
+  const resultIds: mongoose.Types.ObjectId[] = [];
+  for (const item of list) {
+    if (!item) continue;
+    const val = typeof item === 'object' && item._id ? String(item._id) : String(item).trim();
+    if (!val) continue;
+
+    if (mongoose.Types.ObjectId.isValid(val) && String(new mongoose.Types.ObjectId(val)) === val) {
+      resultIds.push(new mongoose.Types.ObjectId(val));
+    } else {
+      let langDoc = await LanguageModel.findOne({ name: { $regex: new RegExp(`^${val}$`, 'i') } });
+      if (!langDoc) {
+        try {
+          langDoc = await LanguageModel.create({ name: val, code: val.toLowerCase().slice(0, 3), isActive: true });
+        } catch {
+          langDoc = await LanguageModel.findOne({ name: { $regex: new RegExp(`^${val}$`, 'i') } });
+        }
+      }
+      if (langDoc?._id) {
+        resultIds.push(langDoc._id as mongoose.Types.ObjectId);
+      }
+    }
+  }
+  return resultIds;
+}
+
+async function resolveCategoryIds(input: any): Promise<mongoose.Types.ObjectId[]> {
+  if (!input) return [];
+  let list: any[] = [];
+  if (Array.isArray(input)) {
+    list = input;
+  } else if (typeof input === 'string') {
+    const trimmed = input.trim();
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const normalized = trimmed.replace(/'/g, '"');
+        const parsed = JSON.parse(normalized);
+        if (Array.isArray(parsed)) list = parsed;
+      } catch {
+        list = trimmed.slice(1, -1).split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+      }
+    } else {
+      list = trimmed.split(',').map(s => s.trim()).filter(Boolean);
+    }
+  }
+
+  const resultIds: mongoose.Types.ObjectId[] = [];
+  for (const item of list) {
+    if (!item) continue;
+    const val = typeof item === 'object' && item._id ? String(item._id) : String(item).trim();
+    if (!val) continue;
+
+    if (mongoose.Types.ObjectId.isValid(val) && String(new mongoose.Types.ObjectId(val)) === val) {
+      resultIds.push(new mongoose.Types.ObjectId(val));
+    } else {
+      let catDoc = await CategoryModel.findOne({ name: { $regex: new RegExp(`^${val}$`, 'i') } });
+      if (!catDoc) {
+        try {
+          const slug = val.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+          catDoc = await CategoryModel.create({ name: val, slug, isActive: true });
+        } catch {
+          catDoc = await CategoryModel.findOne({ name: { $regex: new RegExp(`^${val}$`, 'i') } });
+        }
+      }
+      if (catDoc?._id) {
+        resultIds.push(catDoc._id as mongoose.Types.ObjectId);
+      }
+    }
+  }
+  return resultIds;
+}
 
 const syncSections = async (contentIdStr: string, sections: string[] | undefined) => {
   await SectionModel.updateMany(
@@ -169,6 +309,16 @@ export const createTVShow = async (request: FastifyRequest, reply: FastifyReply)
     if (trailer && body.videoUrl === trailer) delete body.videoUrl;
     if (trailer && body.sourceVideoUrl === trailer) delete body.sourceVideoUrl;
 
+    if (body.genres !== undefined) {
+      body.genres = await resolveGenreIds(body.genres);
+    }
+    if (body.languages !== undefined) {
+      body.languages = await resolveLanguageIds(body.languages);
+    }
+    if (body.categories !== undefined) {
+      body.categories = await resolveCategoryIds(body.categories);
+    }
+
     const tvShow = await TVShowModel.create(body);
     await syncSections(tvShow._id.toString(), body.sections);
 
@@ -249,6 +399,16 @@ export const updateTVShow = async (request: FastifyRequest, reply: FastifyReply)
     }
     if (trailer && body.videoUrl === trailer) delete body.videoUrl;
     if (trailer && body.sourceVideoUrl === trailer) delete body.sourceVideoUrl;
+
+    if (body.genres !== undefined) {
+      body.genres = await resolveGenreIds(body.genres);
+    }
+    if (body.languages !== undefined) {
+      body.languages = await resolveLanguageIds(body.languages);
+    }
+    if (body.categories !== undefined) {
+      body.categories = await resolveCategoryIds(body.categories);
+    }
 
     const tvShow = await TVShowModel.findByIdAndUpdate(
       id,

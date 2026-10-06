@@ -163,6 +163,13 @@ export const getSeriesDetail = async (request: FastifyRequest, reply: FastifyRep
       const hours = ep.duration ? Math.floor(ep.duration / 3600) : 0;
       const minutes = ep.duration ? Math.floor((ep.duration % 3600) / 60) : 0;
       const durationStr = ep.duration ? (hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`) : null;
+      const sourceVideoUrl = ep.sourceVideoUrl || null;
+      const sourceIsPlaylist = !!sourceVideoUrl && /\.m3u8(?:[?#]|$)/i.test(sourceVideoUrl);
+      const playableUrl = ep.hlsUrl || (
+        sourceVideoUrl && (sourceIsPlaylist || /^https?:\/\//i.test(sourceVideoUrl))
+          ? sourceVideoUrl
+          : null
+      );
       
       seasonsMap.get(ep.season)!.push({
         id: ep._id.toString(),
@@ -174,8 +181,10 @@ export const getSeriesDetail = async (request: FastifyRequest, reply: FastifyRep
         duration: ep.duration || null,
         durationFormatted: durationStr,
         isFree: ep.isFree,
-        videoUrl: toAbsoluteUrl(request, ep.hlsUrl || ep.sourceVideoUrl, s3Active, s3BaseUrl) || null,
-        hlsUrl: toAbsoluteUrl(request, ep.hlsUrl || ep.sourceVideoUrl, s3Active, s3BaseUrl) || null,
+        videoUrl: toAbsoluteUrl(request, playableUrl, s3Active, s3BaseUrl) || null,
+        hlsUrl: toAbsoluteUrl(request, playableUrl, s3Active, s3BaseUrl) || null,
+        processingStatus: ep.processingStatus,
+        processingError: ep.processingError || null,
       });
     }
 

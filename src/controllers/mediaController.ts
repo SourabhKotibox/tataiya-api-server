@@ -573,7 +573,14 @@ export const presignMediaUpload = async (request: FastifyRequest, reply: Fastify
       return reply.status(400).send({ success: false, error: 'fileName and contentType are required' });
     }
 
-    const { isS3Configured, generatePresignedUrl } = await import('../lib/s3');
+    const { isS3Configured, generatePresignedUrl, getS3Settings } = await import('../lib/s3');
+    const storageSettings = await getS3Settings();
+    if (body.source === 'episodes' && storageSettings.storageDriver !== 'spaces') {
+      return reply.status(400).send({
+        success: false,
+        error: 'Episode video uploads require DigitalOcean Spaces storage.',
+      });
+    }
     if (!(await isS3Configured())) {
       return reply.status(400).send({
         success: false,
@@ -661,11 +668,11 @@ export const confirmS3MediaUpload = async (request: FastifyRequest, reply: Fasti
       storageType: activeStorageType,
       s3Key: body.key,
     };
-    if (isVideo) createPayload.hlsStatus = 'processing';
+    if (isVideo && body.source !== 'episodes') createPayload.hlsStatus = 'processing';
 
     const mediaFile = await MediaFileModel.create(createPayload);
 
-    if (isVideo) {
+    if (isVideo && body.source !== 'episodes') {
       const { transcodeToHls } = await import('../lib/hlsTranscoder');
       const protocol = request.protocol;
       const host = request.headers.host;

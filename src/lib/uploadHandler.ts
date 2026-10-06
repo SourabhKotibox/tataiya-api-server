@@ -2,11 +2,13 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
+import { Transform } from 'stream';
+import { pipeline } from 'stream/promises';
 import type { FastifyRequest } from 'fastify';
 import { MediaFileModel } from '../models/MediaFile';
 import { MediaFolderModel } from '../models/MediaFolder';
 import { Types } from 'mongoose';
-import { uploadToS3, deleteFromS3, isS3Configured, getS3Settings } from './s3';
+import { uploadToS3, uploadReadableToS3, deleteFromS3, isS3Configured, getS3Settings } from './s3';
 import { transcodeToHls } from './hlsTranscoder';
 import { logger } from './logger';
 import { ensureVttSubtitle, isSubtitleFile } from './subtitleConverter';
@@ -159,6 +161,12 @@ export const saveFileFromPart = async (
   const typeConfig = UPLOAD_TYPES[uploadType];
   const targetDir = customDir || typeConfig.defaultDir;
   const useS3 = await isS3Configured();
+  if (options?.source === 'episodes') {
+    const storageSettings = await getS3Settings();
+    if (storageSettings.storageDriver !== 'spaces' || !useS3) {
+      throw new Error('Episode video uploads require configured DigitalOcean Spaces storage.');
+    }
+  }
 
   if (!validateFileType(part.filename, uploadType)) {
     throw new Error(
@@ -184,6 +192,108 @@ export const saveFileFromPart = async (
 
   // ── S3 path ─────────────────────────────────────────────────────────────
   if (useS3) {
+    const isVid = isVideoFile(part.filename, part.mimetype || '');
+    if (isVid) {
+      const mimeType = part.mimetype || 'application/octet-stream';
+      const tempDir = path.join(UPLOADS_ROOT, 'temp');
+      await fs.promises.mkdir(tempDir, { recursive: true });
+      const tempPath = path.join(tempDir, `upload-${generateUniqueFileName(part.filename)}`);
+      const hash = crypto.createHash('sha256');
+      let fileSize = 0;
+
+      try {
+        await pipeline(
+          part.file,
+          new Transform({
+            transform(chunk: Buffer, _encoding, callback) {
+              fileSize += chunk.length;
+              hash.update(chunk);
+              callback(null, chunk);
+            },
+          }),
+          fs.createWriteStream(tempPath)
+        );
+        if (part.file.truncated) {
+          throw new Error('Video upload exceeded the configured multipart file-size limit.');
+        }
+        if (fileSize === 0) throw new Error('Uploaded video is empty.');
+
+        const contentHash = hash.digest('hex');
+        const existingFile = await MediaFileModel.findOne({
+          $or: [{ contentHash }, { name: part.filename, fileSize }],
+        });
+        if (existingFile) {
+          return {
+            originalName: existingFile.name,
+            fileName: path.basename(existingFile.filePath || existingFile.url),
+            filePath: existingFile.filePath || existingFile.url,
+            url: existingFile.url,
+            fileSize: existingFile.fileSize,
+            mimeType: existingFile.fileType,
+            uploadType,
+            storageType: existingFile.storageType || 's3',
+            s3Key: (existingFile as any).s3Key,
+            mediaFileId: existingFile._id.toString(),
+            isHls: !!existingFile.isHls,
+            hlsStatus: existingFile.hlsStatus,
+            hlsMasterPlaylistUrl: existingFile.hlsMasterPlaylistUrl,
+            hlsMasterPlaylistPath: existingFile.hlsMasterPlaylistPath,
+            hlsQualities: existingFile.hlsQualities,
+            duration: existingFile.duration,
+          };
+        }
+
+        const publicUrl = await uploadReadableToS3(s3Key, fs.createReadStream(tempPath), mimeType);
+        const currentSettings = await getS3Settings();
+        const activeStorageType = currentSettings.storageDriver === 'spaces' ? 'spaces' : 's3';
+        const fileInfo: UploadedFileInfo = {
+          originalName: part.filename,
+          fileName,
+          filePath: s3Key,
+          url: publicUrl,
+          fileSize,
+          mimeType,
+          uploadType,
+          storageType: activeStorageType,
+          s3Key,
+        };
+
+        if (options?.trackInMediaLibrary !== false) {
+          const mediaFile = await MediaFileModel.create({
+            name: part.filename,
+            url: publicUrl,
+            filePath: s3Key,
+            fileSize,
+            fileType: mimeType,
+            folder: resolvedFolderId ? new Types.ObjectId(resolvedFolderId) : undefined,
+            source: options?.source || uploadType.toLowerCase(),
+            sourceId: options?.sourceId ? new Types.ObjectId(options.sourceId) : undefined,
+            contentHash,
+            contentName: options?.contentName,
+            contentType: options?.contentType,
+            storageType: activeStorageType,
+            s3Key,
+            ...(options?.source === 'episodes' ? {} : { hlsStatus: 'processing' }),
+          });
+          fileInfo.mediaFileId = mediaFile._id.toString();
+          fileInfo.hlsStatus = mediaFile.hlsStatus;
+          fileInfo.isHls = false;
+
+          if (options?.source !== 'episodes') {
+            transcodeToHls(mediaFile._id.toString(), '', baseUrl, activeStorageType).catch((err) => {
+              logger.error({ err, mediaFileId: mediaFile._id }, 'Failed to transcode video to HLS (remote)');
+            });
+          }
+        }
+
+        return fileInfo;
+      } finally {
+        await fs.promises.unlink(tempPath).catch((error) => {
+          logger.warn({ error, tempPath }, 'Failed to remove temporary video upload');
+        });
+      }
+    }
+
     const chunks: Buffer[] = [];
     for await (const chunk of part.file) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -248,7 +358,6 @@ export const saveFileFromPart = async (
     }
 
     const publicUrl = await uploadToS3(finalKey, buffer, mimeType);
-    const isVid = isVideoFile(part.filename, part.mimetype || '');
     const currentSettings = await getS3Settings();
     const activeStorageType = currentSettings.storageDriver === 'spaces' ? 'spaces' : 's3';
 
@@ -281,14 +390,14 @@ export const saveFileFromPart = async (
           storageType: activeStorageType,
           s3Key: finalKey,
         };
-        if (isVid) createPayload.hlsStatus = 'processing';
+        if (isVid && options?.source !== 'episodes') createPayload.hlsStatus = 'processing';
 
         const mediaFile = await MediaFileModel.create(createPayload);
         fileInfo.mediaFileId = mediaFile._id.toString();
         fileInfo.hlsStatus = mediaFile.hlsStatus;
         fileInfo.isHls = false;
 
-        if (isVid) {
+        if (isVid && options?.source !== 'episodes') {
           transcodeToHls(mediaFile._id.toString(), '', baseUrl, activeStorageType).catch((err) => {
             logger.error({ err, mediaFileId: mediaFile._id }, 'Failed to transcode video to HLS (remote)');
           });
@@ -417,14 +526,14 @@ export const saveFileFromPart = async (
               contentType: options?.contentType,
               storageType: 'local',
             };
-            if (isVid) createPayload.hlsStatus = 'processing';
+            if (isVid && options?.source !== 'episodes') createPayload.hlsStatus = 'processing';
 
             const mediaFile = await MediaFileModel.create(createPayload);
             fileInfo.mediaFileId = mediaFile._id.toString();
             fileInfo.hlsStatus = mediaFile.hlsStatus;
             fileInfo.isHls = false;
 
-            if (isVid) {
+            if (isVid && options?.source !== 'episodes') {
               transcodeToHls(mediaFile._id.toString(), fullFilePath, baseUrl, 'local').catch((err) => {
                 logger.error({ err, mediaFileId: mediaFile._id }, 'Failed to transcode video to HLS (local)');
               });

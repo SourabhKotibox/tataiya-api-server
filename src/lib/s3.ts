@@ -2,6 +2,7 @@ import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand, Head
 import fs from 'fs';
 import path from 'path';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { Upload } from '@aws-sdk/lib-storage';
 import { Readable } from 'stream';
 import { logger } from './logger';
 import { SettingsModel } from '../models/Settings';
@@ -276,6 +277,34 @@ export async function uploadToS3(
   return buildPublicUrl(settings, key);
 }
 
+export async function uploadReadableToS3(
+  key: string,
+  body: Readable,
+  contentType: string
+): Promise<string> {
+  const settings = await getS3Settings();
+  if (!settings.accessKeyId || !settings.secretAccessKey || (settings.storageDriver !== 's3' && settings.storageDriver !== 'spaces')) {
+    throw new Error('Remote storage credentials not configured or storage driver is not s3/spaces');
+  }
+
+  const client = await getS3Client();
+  const upload = new Upload({
+    client,
+    params: {
+      Bucket: settings.bucket,
+      Key: key,
+      Body: body,
+      ContentType: contentType,
+      ...(settings.storageDriver === 'spaces' ? { ACL: 'public-read' as const } : {}),
+    },
+    partSize: 8 * 1024 * 1024,
+    queueSize: 2,
+    leavePartsOnError: false,
+  });
+  await upload.done();
+  return buildPublicUrl(settings, key);
+}
+
 export async function downloadFromS3ToFile(s3Key: string, destPath: string): Promise<void> {
   const settings = await getS3Settings();
   const s3Client = await getS3Client();
@@ -532,4 +561,3 @@ export async function testStorageConnection(config?: {
     return { success: false, error: errMsg };
   }
 }
-
