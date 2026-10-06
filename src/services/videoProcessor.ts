@@ -323,10 +323,9 @@ const transcodeHlsSequential = async (opts: {
       '-bufsize',      q.bufsize,
       '-profile:v',    'main',
       '-preset',       'ultrafast',
-      '-c:a',          'aac',
       ...(folderType === 'episodes'
-        ? ['-profile:a', 'aac_low', '-ac', '2', '-b:a', '128k', '-ar', '44100']
-        : ['-b:a', q.audioBitrate, '-ar', '48000']),
+        ? ['-c:a', 'libmp3lame', '-ac', '2', '-b:a', '128k', '-ar', '48000']
+        : ['-c:a', 'aac', '-b:a', q.audioBitrate, '-ar', '48000']),
       '-f',            'hls',
       '-hls_time',     '6',
       '-hls_playlist_type', 'vod',
