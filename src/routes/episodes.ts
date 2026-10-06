@@ -8,6 +8,8 @@ import {
   deleteEpisode,
   getSeasons,
   toggleEpisodeLock,
+  getEpisodeProcessingStatus,
+  reprocessEpisodeHls,
 } from '../controllers/episodeController';
 
 const episodes: FastifyPluginAsync = async (fastify) => {
@@ -18,6 +20,8 @@ const episodes: FastifyPluginAsync = async (fastify) => {
   fastify.put('/:id', { onRequest: [requirePermission('tvShows', 'canEdit')] }, updateEpisode);
   fastify.delete('/:id', { onRequest: [requirePermission('tvShows', 'canDelete')] }, deleteEpisode);
   fastify.patch('/:id/lock', { onRequest: [requirePermission('tvShows', 'canEdit')] }, toggleEpisodeLock);
+  fastify.get('/:id/processing-status', { onRequest: [requirePermission('tvShows', 'canView')] }, getEpisodeProcessingStatus);
+  fastify.post('/:id/reprocess', { onRequest: [requirePermission('tvShows', 'canEdit')] }, reprocessEpisodeHls);
 };
 
 export default episodes;
