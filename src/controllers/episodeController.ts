@@ -1,8 +1,10 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { EpisodeModel } from '../models/Episode';
+import { SeasonModel } from '../models/Season';
 import { TVShowModel } from '../models/TVShow';
 import { Types } from 'mongoose';
 import { logger } from '../lib/logger';
+import { syncTVShowTotalSeasons } from '../lib/seasonStats';
 import { isRawLocalVideo } from '../lib/contentResolver';
 
 export const getAllEpisodes = async (request: FastifyRequest, reply: FastifyReply) => {
@@ -112,18 +114,6 @@ export const getEpisodeById = async (request: FastifyRequest, reply: FastifyRepl
   } catch (error: any) {
     logger.error({ error }, 'Error getting episode by ID');
     return reply.status(500).send({ success: false, error: error.message });
-  }
-};
-
-const syncTVShowTotalSeasons = async (tvShowId?: Types.ObjectId | string | null) => {
-  if (!tvShowId) return;
-  try {
-    const showObjectId = typeof tvShowId === 'string' ? new Types.ObjectId(tvShowId) : tvShowId;
-    const distinctSeasons = await EpisodeModel.distinct('season', { tvShowId: showObjectId });
-    const count = distinctSeasons.length;
-    await TVShowModel.findByIdAndUpdate(showObjectId, { $set: { totalSeasons: count } });
-  } catch (err) {
-    logger.error({ err, tvShowId }, 'Failed to sync TVShow totalSeasons');
   }
 };
 
@@ -359,7 +349,7 @@ export const getSeasons = async (request: FastifyRequest, reply: FastifyReply) =
       }
     }
 
-    const seasons = await EpisodeModel.aggregate([
+    const episodeSeasons = await EpisodeModel.aggregate([
       { $match: matchFilter },
       {
         $group: {
@@ -393,6 +383,41 @@ export const getSeasons = async (request: FastifyRequest, reply: FastifyReply) =
       },
       { $sort: { showName: 1, season: 1 } },
     ]);
+
+    const savedSeasons = await SeasonModel.find(matchFilter)
+      .populate('tvShowId', 'title thumbnail posterImage')
+      .lean();
+    const seasonMap = new Map<string, any>();
+    for (const season of episodeSeasons) {
+      seasonMap.set(`${season.tvShowId}-${season.season}`, season);
+    }
+    for (const season of savedSeasons as any[]) {
+      const show = season.tvShowId;
+      const showId = show?._id?.toString() || season.tvShowId?.toString();
+      const key = `${showId}-${season.seasonNumber}`;
+      const existing = seasonMap.get(key);
+      seasonMap.set(key, {
+        ...existing,
+        _id: season._id,
+        id: season._id?.toString(),
+        seasonId: key,
+        tvShowId: show,
+        season: season.seasonNumber,
+        title: season.title,
+        description: season.description,
+        poster: season.poster,
+        posterImage: season.posterImage,
+        releaseDate: season.releaseDate,
+        episodeCount: existing?.episodeCount || 0,
+        showName: show?.title || existing?.showName || 'Unknown Series',
+        thumbnail: season.posterImage || season.poster || existing?.thumbnail || show?.thumbnail || '',
+        status: season.status,
+      });
+    }
+
+    const seasons = Array.from(seasonMap.values()).sort(
+      (a, b) => a.showName.localeCompare(b.showName) || a.season - b.season
+    );
 
     return reply.send({
       success: true,

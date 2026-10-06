@@ -24,6 +24,7 @@ import dashboardRoutes from './dashboard';
 import movieRoutes from './movie';
 import tvShowRoutes from './tvShows';
 import episodeRoutes from './episodes';
+import seasonRoutes from './seasons';
 import adminUsersRoutes from './adminUsers';
 import sectionsRoutes from './sections';
 import countriesRoutes from './countries';
@@ -83,6 +84,7 @@ const router: FastifyPluginAsync = async (fastify) => {
   fastify.register(dashboardRoutes);
   fastify.register(movieRoutes, { prefix: '/movies' });
   fastify.register(tvShowRoutes, { prefix: '/tv-shows' });
+  fastify.register(seasonRoutes, { prefix: '/seasons' });
   fastify.register(episodeRoutes, { prefix: '/episodes' });
   fastify.register(adminUsersRoutes, { prefix: '/admin-users' });
   fastify.register(sectionsRoutes, { prefix: '/sections' });
