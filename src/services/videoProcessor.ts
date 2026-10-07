@@ -268,6 +268,10 @@ export const transcodeHlsMultiResolution = async (options: {
       'Starting HLS transcoding'
     );
 
+    const s3Active = await isS3Configured();
+    const revision = folderType === 'episodes' ? `/${Date.now()}` : '';
+    const s3Prefix = `hls/${folderType}/${id}${revision}`;
+
     return await transcodeHlsSequential({
       startSeconds,
       duration,
@@ -277,6 +281,8 @@ export const transcodeHlsMultiResolution = async (options: {
       ffmpegInput,
       movieId: id,
       folderType,
+      s3Active,
+      s3Prefix
     });
   } finally {
     if (tempSourcePath && fs.existsSync(tempSourcePath)) {
@@ -302,8 +308,10 @@ const transcodeHlsSequential = async (opts: {
   ffmpegInput: string;
   movieId: string;
   folderType?: 'movies' | 'episodes';
+  s3Active?: boolean;
+  s3Prefix?: string;
 }) => {
-  const { startSeconds, duration, qualities, hlsFolder, localUrlBase, ffmpegInput, movieId, folderType = 'movies' } = opts;
+  const { startSeconds, duration, qualities, hlsFolder, localUrlBase, ffmpegInput, movieId, folderType = 'movies', s3Active, s3Prefix } = opts;
 
   for (const q of qualities) {
     const qFolder = path.join(hlsFolder, q.name);
@@ -335,13 +343,34 @@ const transcodeHlsSequential = async (opts: {
 
     await runCommand(ffmpegPath, args);
     logger.info({ quality: q.name }, 'Sequential quality encoded');
+    
+    // Check quality playlist validity
+    const variantPath = path.join(qFolder, 'playlist.m3u8');
+    if (!fs.existsSync(variantPath)) {
+      throw new Error(`HLS ${q.name} playlist is missing`);
+    }
+    const variantLines = fs.readFileSync(variantPath, 'utf8').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const segments = variantLines.filter((line) => !line.startsWith('#'));
+    if (!variantLines.includes('#EXTM3U') || !variantLines.includes('#EXT-X-ENDLIST') || segments.length === 0) {
+      throw new Error(`HLS ${q.name} playlist is incomplete`);
+    }
+
+    const folderSize = getFolderSize(qFolder);
+    q.folderSize = folderSize; // attach size for later
+
+    if (s3Active && s3Prefix) {
+      const { uploadHlsFolderToS3 } = require('../lib/s3');
+      await uploadHlsFolderToS3(qFolder, `${s3Prefix}/${q.name}`);
+      logger.info({ quality: q.name }, 'Sequential quality uploaded to DO Spaces');
+      fs.rmSync(qFolder, { recursive: true, force: true });
+    }
   }
 
   // Rebuild master.m3u8
   writeMasterPlaylist(hlsFolder, qualities);
-  if (folderType === 'episodes') validateEpisodeHlsOutput(hlsFolder, qualities);
+  // (Validation is now done sequentially per quality)
 
-  const out = await buildLocalHlsOutput({ qualities, hlsFolder, localUrlBase, movieId, folderType });
+  const out = await buildLocalHlsOutput({ qualities, hlsFolder, localUrlBase, movieId, folderType, s3Active: opts.s3Active, s3Prefix: opts.s3Prefix });
   return {
     hlsUrl:         out.masterUrl,
     videoQualities: out.renditions,
@@ -373,23 +402,22 @@ const buildLocalHlsOutput = async (opts: {
   localUrlBase: string;
   movieId: string;
   folderType?: 'movies' | 'episodes';
+  s3Active?: boolean;
+  s3Prefix?: string;
 }) => {
-  const { qualities, hlsFolder, localUrlBase, movieId, folderType = 'movies' } = opts;
-  const s3Active = await isS3Configured();
+  const { qualities, hlsFolder, localUrlBase, movieId, folderType = 'movies', s3Active, s3Prefix } = opts;
 
-  if (s3Active) {
-    const revision = folderType === 'episodes' ? `/${Date.now()}` : '';
-    const s3Prefix = `hls/${folderType}/${movieId}${revision}`;
-    const uploadedCount = await uploadHlsFolderToS3(hlsFolder, s3Prefix);
-    if (folderType === 'episodes' && uploadedCount !== countFiles(hlsFolder)) {
-      throw new Error('Episode HLS upload to remote storage is incomplete');
-    }
+  if (s3Active && s3Prefix) {
+    // Only upload the master playlist, qualities were uploaded sequentially
+    const { uploadHlsFolderToS3 } = require('../lib/s3');
+    await uploadHlsFolderToS3(hlsFolder, s3Prefix);
+    
     const baseUrl = await getHlsPublicBaseUrl();
     const masterUrl = `${baseUrl}/${s3Prefix}/master.m3u8`;
     const renditions = qualities.map((q) => ({
       quality: q.name as QualityName,
       url: `${baseUrl}/${s3Prefix}/${q.name}/playlist.m3u8`,
-      size: getFolderSize(path.join(hlsFolder, q.name)),
+      size: (q as any).folderSize || 0,
     }));
     try { fs.rmSync(hlsFolder, { recursive: true, force: true }); } catch { /* ignore */ }
     return { masterUrl, renditions };
@@ -399,7 +427,7 @@ const buildLocalHlsOutput = async (opts: {
   const renditions = qualities.map((q) => ({
     quality: q.name as QualityName,
     url: `${localUrlBase}/${q.name}/playlist.m3u8`,
-    size: getFolderSize(path.join(hlsFolder, q.name)),
+    size: (q as any).folderSize || getFolderSize(path.join(hlsFolder, q.name)),
   }));
   return { masterUrl, renditions };
 };
