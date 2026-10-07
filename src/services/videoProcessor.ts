@@ -173,12 +173,10 @@ const filterQualitiesByResolution = (
   if (matches.length === 0) {
     matches = [HLS_QUALITY_LADDER[0]]; // fallback to 144p
   }
-  // Cap to safe maximum of 4 ladders to ensure fast & reliable transcode
-  if (matches.length > 4) {
+  // Cap to maximum of 2 ladders (Base + Original) for VERY FAST processing
+  if (matches.length > 2) {
     matches = [
       matches.find((q) => q.name === '360p') || matches[0],
-      matches.find((q) => q.name === '480p') || matches[1],
-      matches.find((q) => q.name === '720p') || matches[matches.length - 2],
       matches[matches.length - 1],
     ].filter((v, i, a) => a.findIndex((t) => t.name === v.name) === i) as any;
   }
@@ -325,7 +323,7 @@ const transcodeHlsSequential = async (opts: {
     args.push(
       '-threads',      '0',
       '-c:v',          'libx264',
-      '-preset',       'fast',
+      '-preset',       'ultrafast',
       '-g',            '48',
       '-sc_threshold', '0',
       '-keyint_min',   '48',
