@@ -477,9 +477,67 @@ export const processMovieHls = async (movieId: Types.ObjectId | string, sourceVi
   }
 };
 
-export const processMovieInBackground = (movieId: Types.ObjectId | string, sourceVideoUrl: string) => {
-  setImmediate(async () => {
-    await processMovieHls(movieId, sourceVideoUrl);
+type MovieHlsJob = {
+  movieId: Types.ObjectId | string;
+  sourceVideoUrl: string;
+};
+
+const movieHlsQueue: MovieHlsJob[] = [];
+let movieHlsWorkerRunning = false;
+
+const runMovieHlsQueue = async () => {
+  if (movieHlsWorkerRunning) return;
+
+  movieHlsWorkerRunning = true;
+
+  try {
+    while (movieHlsQueue.length > 0) {
+      const job = movieHlsQueue.shift();
+
+      if (!job) continue;
+
+      logger.info(
+        {
+          movieId: job.movieId.toString(),
+          remainingJobs: movieHlsQueue.length,
+        },
+        'Starting queued movie HLS job'
+      );
+
+      await processMovieHls(job.movieId, job.sourceVideoUrl);
+
+      logger.info(
+        {
+          movieId: job.movieId.toString(),
+          remainingJobs: movieHlsQueue.length,
+        },
+        'Queued movie HLS job finished'
+      );
+    }
+  } finally {
+    movieHlsWorkerRunning = false;
+  }
+};
+
+export const processMovieInBackground = (
+  movieId: Types.ObjectId | string,
+  sourceVideoUrl: string
+) => {
+  movieHlsQueue.push({
+    movieId,
+    sourceVideoUrl,
+  });
+
+  logger.info(
+    {
+      movieId: movieId.toString(),
+      queueLength: movieHlsQueue.length,
+    },
+    'Movie HLS job added to queue'
+  );
+
+  setImmediate(() => {
+    void runMovieHlsQueue();
   });
 };
 
@@ -512,9 +570,67 @@ export const processEpisodeHls = async (episodeId: Types.ObjectId | string, sour
   }
 };
 
-export const processEpisodeInBackground = (episodeId: Types.ObjectId | string, sourceVideoUrl: string) => {
-  setImmediate(async () => {
-    await processEpisodeHls(episodeId, sourceVideoUrl);
+type EpisodeHlsJob = {
+  episodeId: Types.ObjectId | string;
+  sourceVideoUrl: string;
+};
+
+const episodeHlsQueue: EpisodeHlsJob[] = [];
+let episodeHlsWorkerRunning = false;
+
+const runEpisodeHlsQueue = async () => {
+  if (episodeHlsWorkerRunning) return;
+
+  episodeHlsWorkerRunning = true;
+
+  try {
+    while (episodeHlsQueue.length > 0) {
+      const job = episodeHlsQueue.shift();
+
+      if (!job) continue;
+
+      logger.info(
+        {
+          episodeId: job.episodeId.toString(),
+          remainingJobs: episodeHlsQueue.length,
+        },
+        'Starting queued episode HLS job'
+      );
+
+      await processEpisodeHls(job.episodeId, job.sourceVideoUrl);
+
+      logger.info(
+        {
+          episodeId: job.episodeId.toString(),
+          remainingJobs: episodeHlsQueue.length,
+        },
+        'Queued episode HLS job finished'
+      );
+    }
+  } finally {
+    episodeHlsWorkerRunning = false;
+  }
+};
+
+export const processEpisodeInBackground = (
+  episodeId: Types.ObjectId | string,
+  sourceVideoUrl: string
+) => {
+  episodeHlsQueue.push({
+    episodeId,
+    sourceVideoUrl,
+  });
+
+  logger.info(
+    {
+      episodeId: episodeId.toString(),
+      queueLength: episodeHlsQueue.length,
+    },
+    'Episode HLS job added to queue'
+  );
+
+  setImmediate(() => {
+    void runEpisodeHlsQueue();
   });
 };
 
