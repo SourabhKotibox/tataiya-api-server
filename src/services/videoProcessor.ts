@@ -324,21 +324,25 @@ const transcodeHlsSequential = async (opts: {
 
     args.push(
       '-threads',      '0',
-      '-vf',           `scale=-2:${q.height}`,
       '-c:v',          'libx264',
+      '-preset',       'fast',
+      '-g',            '48',
+      '-sc_threshold', '0',
+      '-keyint_min',   '48',
+      '-vf',           `scale=w='if(gt(iw,ih),-2,${q.height})':h='if(gt(iw,ih),${q.height},-2)'`,
       '-b:v',          q.bitrate,
       '-maxrate',      q.maxrate,
       '-bufsize',      q.bufsize,
       '-profile:v',    'main',
-      '-preset',       'ultrafast',
-      ...(folderType === 'episodes'
-        ? ['-c:a', 'libmp3lame', '-ac', '2', '-b:a', '128k', '-ar', '48000']
-        : ['-c:a', 'aac', '-b:a', q.audioBitrate, '-ar', '48000']),
+      '-c:a',          'aac',
+      '-b:a',          '128k',
+      '-ac',           '2',
+      '-ar',           '48000',
       '-f',            'hls',
-      '-hls_time',     '6',
+      '-hls_time',     '4',
       '-hls_playlist_type', 'vod',
       '-hls_segment_filename', path.join(qFolder, 'segment_%03d.ts'),
-      path.join(qFolder, 'playlist.m3u8'),
+      path.join(qFolder, 'playlist.m3u8')
     );
 
     await runCommand(ffmpegPath, args);
