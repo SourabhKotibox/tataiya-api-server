@@ -368,6 +368,7 @@ export const getWatchData = async (request: FastifyRequest, reply: FastifyReply)
         thumbnail: toAbsoluteUrl(request, ep.thumbnail || content.thumbnail),
         isFree: !!ep.isFree,
         hlsUrl: isAccessible ? toAbsoluteUrl(request, ep.hlsUrl || ep.sourceVideoUrl) : null,
+        trailerUrl: toAbsoluteUrl(request, ep.trailerUrl) || null,
       }));
     }
 

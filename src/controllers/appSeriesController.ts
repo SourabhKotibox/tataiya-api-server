@@ -183,6 +183,7 @@ export const getSeriesDetail = async (request: FastifyRequest, reply: FastifyRep
         isFree: ep.isFree,
         videoUrl: toAbsoluteUrl(request, playableUrl, s3Active, s3BaseUrl) || null,
         hlsUrl: toAbsoluteUrl(request, playableUrl, s3Active, s3BaseUrl) || null,
+        trailerUrl: toAbsoluteUrl(request, ep.trailerUrl, s3Active, s3BaseUrl) || null,
         processingStatus: ep.processingStatus,
         processingError: ep.processingError || null,
       });
