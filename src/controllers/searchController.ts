@@ -51,7 +51,6 @@ const mapSearchItem = (item: any, userPlan = 'free', type = 'movie') => {
 };
 
 export const getRecommendations = async (preferredLanguage: string, userPlan = 'free') => {
-  // Resolve language ID for movies/shows
   let targetLanguageId: mongoose.Types.ObjectId | null = null;
   if (preferredLanguage) {
     const langDoc = await LanguageModel.findOne({ name: new RegExp(`^${preferredLanguage}$`, 'i') }).lean();
@@ -60,23 +59,13 @@ export const getRecommendations = async (preferredLanguage: string, userPlan = '
     }
   }
 
-  // Fetch recommended movies and shows (language filtered)
   const filter: any = { status: 'published' };
   if (targetLanguageId) filter.languages = targetLanguageId;
 
-  const [recMovies, recShows] = await Promise.all([
-    MovieModel.find(filter).sort({ views: -1, createdAt: -1 }).limit(12).lean(),
-    TVShowModel.find(filter).sort({ views: -1, createdAt: -1 }).limit(12).lean(),
-  ]);
+  const recShows = await TVShowModel.find(filter).sort({ views: -1, createdAt: -1 }).limit(12).lean();
 
-  const recommendationsList = [
-    ...recMovies.map(m => mapSearchItem(m, userPlan, 'movie')),
-    ...recShows.map(s => mapSearchItem(s, userPlan, 'tvShow'))
-  ];
-
-  // Sort recommendations by views to make them look uniform
+  const recommendationsList = recShows.map(s => mapSearchItem(s, userPlan, 'tvShow'));
   recommendationsList.sort((a, b) => b.views - a.views);
-
   return recommendationsList.slice(0, 12);
 };
 
@@ -110,27 +99,15 @@ export const getSearchPage = async (request: FastifyRequest, reply: FastifyReply
     if (!searchTerm) {
       // 1. Initial State: Return Trending Searches & Recommended For You
 
-      // A. Fetch Trending Searches (top viewed/liked movie and show titles)
-      const [popularMovies, popularShows] = await Promise.all([
-        MovieModel.find({ status: 'published' })
+      // A. Fetch Trending Searches (top viewed/liked show titles only)
+      const popularShows = await TVShowModel.find({ status: 'published' })
           .sort({ views: -1, likes: -1 })
-          .limit(6)
+          .limit(8)
           .select('title views likes')
-          .lean(),
-        TVShowModel.find({ status: 'published' })
-          .sort({ views: -1, likes: -1 })
-          .limit(6)
-          .select('title views likes')
-          .lean()
-      ]);
+          .lean();
 
-      const allPopular = [...popularMovies, ...popularShows].sort((a: any, b: any) => {
-        return (b.views || 0) - (a.views || 0);
-      });
-
-      // Extract unique titles for trending searches
       const trendingSearchesSet = new Set<string>();
-      allPopular.forEach(m => trendingSearchesSet.add(m.title));
+      popularShows.forEach(s => trendingSearchesSet.add((s as any).title));
       const trendingSearches = Array.from(trendingSearchesSet).slice(0, 6);
 
       const recommendations = await getRecommendations(preferredLanguage, userPlan);
@@ -176,26 +153,10 @@ export const getSearchPage = async (request: FastifyRequest, reply: FastifyReply
       $or: queryOptions
     };
 
-    const isMovieSearch = /movie/i.test(searchTerm);
-    const isShowSearch = /show|series/i.test(searchTerm);
+    // Search only TV shows
+    const matchedShows = await TVShowModel.find(baseFilter).limit(30).lean();
 
-    const movieFilter = isMovieSearch ? { ...baseFilter, $or: [{}] } : baseFilter;
-    const showFilter = isShowSearch ? { ...baseFilter, $or: [{}] } : baseFilter;
-
-    let matchedMovies: any[] = [];
-    let matchedShows: any[] = [];
-
-    if (!isShowSearch) {
-      matchedMovies = await MovieModel.find(movieFilter).limit(20).lean();
-    }
-    if (!isMovieSearch) {
-      matchedShows = await TVShowModel.find(showFilter).limit(20).lean();
-    }
-
-    const results = [
-      ...matchedMovies.map(m => mapSearchItem(m, userPlan, 'movie')),
-      ...matchedShows.map(s => mapSearchItem(s, userPlan, 'tvShow'))
-    ];
+    const results = matchedShows.map(s => mapSearchItem(s, userPlan, 'tvShow'));
 
     // Sort search results by views/popularity
     results.sort((a, b) => b.views - a.views);

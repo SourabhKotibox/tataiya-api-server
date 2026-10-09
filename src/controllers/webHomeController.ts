@@ -212,24 +212,27 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
           }
         });
       })(),
-      // 1-2: Trending movies + series
-      MovieModel.find({ status: 'published', trending: true }).sort({ views: -1, createdAt: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean(),
-      TVShowModel.find({ status: 'published', trending: true }).sort({ views: -1, createdAt: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean(),
-      // 3-4: New releases movies + series
-      MovieModel.find({ status: 'published', isNewContent: true }).sort({ createdAt: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean(),
-      TVShowModel.find({ status: 'published', isNewContent: true }).sort({ createdAt: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean(),
-      // 5-6: Top rated movies + series
-      MovieModel.find({ status: 'published' }).sort({ imdbRating: -1, views: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean(),
-      TVShowModel.find({ status: 'published' }).sort({ imdbRating: -1, views: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean(),
-      // 7: Action Movies
+      // 1: Trending TV Shows
+      TVShowModel.find({ status: 'published', trending: true }).sort({ views: -1, createdAt: -1 }).select(selectFields).limit(20).populate('genres', 'name').lean(),
+      // 2: (empty placeholder for index compat)
+      Promise.resolve([]),
+      // 3: New release TV Shows
+      TVShowModel.find({ status: 'published', isNewContent: true }).sort({ createdAt: -1 }).select(selectFields).limit(20).populate('genres', 'name').lean(),
+      // 4: (empty placeholder)
+      Promise.resolve([]),
+      // 5: Top rated TV Shows
+      TVShowModel.find({ status: 'published' }).sort({ imdbRating: -1, views: -1 }).select(selectFields).limit(20).populate('genres', 'name').lean(),
+      // 6: (empty placeholder)
+      Promise.resolve([]),
+      // 7: Action TV Shows
       actionGenre
-        ? MovieModel.find({ status: 'published', genres: actionGenre._id }).sort({ views: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean()
+        ? TVShowModel.find({ status: 'published', genres: actionGenre._id }).sort({ views: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean()
         : Promise.resolve([]),
-      // 8: Drama Movies
+      // 8: Drama TV Shows
       dramaGenre
-        ? MovieModel.find({ status: 'published', genres: dramaGenre._id }).sort({ views: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean()
+        ? TVShowModel.find({ status: 'published', genres: dramaGenre._id }).sort({ views: -1 }).select(selectFields).limit(10).populate('genres', 'name').lean()
         : Promise.resolve([]),
-      // 9: All published series
+      // 9: All published TV Shows
       TVShowModel.find({ status: 'published' }).sort({ views: -1, createdAt: -1 }).select(selectFields).limit(20).populate('genres', 'name').lean(),
     ];
 
@@ -237,14 +240,14 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
 
     // Extract results
     let heroContent = (results[0] as any[]).filter(Boolean);
-    const trendingMoviesRaw = results[1] as any[];
-    const trendingShowsRaw = results[2] as any[];
-    const newMoviesRaw = results[3] as any[];
-    const newShowsRaw = results[4] as any[];
-    const topMoviesRaw = results[5] as any[];
-    const topShowsRaw = results[6] as any[];
-    const actionMoviesRaw = results[7] as any[];
-    const dramaMoviesRaw = results[8] as any[];
+    const trendingShowsRaw = results[1] as any[];
+    const _unused2 = results[2] as any[];
+    const newShowsRaw = results[3] as any[];
+    const _unused4 = results[4] as any[];
+    const topShowsRaw = results[5] as any[];
+    const _unused6 = results[6] as any[];
+    const actionShowsRaw = results[7] as any[];
+    const dramaShowsRaw = results[8] as any[];
     const tvShowsRaw = results[9] as any[];
 
     const byViews = (a: any, b: any) => (b.views || 0) - (a.views || 0) || +new Date(b.createdAt) - +new Date(a.createdAt);
@@ -252,11 +255,11 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
     const byRating = (a: any, b: any) => (b.imdbRating || 0) - (a.imdbRating || 0) || byViews(a, b);
 
     // Map raw data into frontend structure (heroContent is already mapped)
-    let trendingNow = mergeRanked(trendingMoviesRaw, trendingShowsRaw, byViews).map((m: any) => mapContentItem(m));
-    let newReleases = mergeRanked(newMoviesRaw, newShowsRaw, byCreated).map((m: any) => mapContentItem(m));
-    const topRated = mergeRanked(topMoviesRaw, topShowsRaw, byRating).map((m: any) => mapContentItem(m));
-    const actionMovies = actionMoviesRaw.map((m: any) => mapContentItem(m));
-    const dramaMovies = dramaMoviesRaw.map((m: any) => mapContentItem(m));
+    let trendingNow = tagKind(trendingShowsRaw, 'show').sort(byViews).map((m: any) => mapContentItem(m));
+    let newReleases = tagKind(newShowsRaw, 'show').sort(byCreated).map((m: any) => mapContentItem(m));
+    const topRated = tagKind(topShowsRaw, 'show').sort(byRating).map((m: any) => mapContentItem(m));
+    const actionMovies = tagKind(actionShowsRaw, 'show').map((m: any) => mapContentItem(m));
+    const dramaMovies = tagKind(dramaShowsRaw, 'show').map((m: any) => mapContentItem(m));
     const tvShows = tagKind(tvShowsRaw, 'show').map((m: any) => mapContentItem(m));
 
     // Fallbacks so New & Hot / Trending never render empty when flags are sparse
@@ -321,13 +324,10 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
 export const getWebAllContent = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
     const selectFields = 'title description shortDescription thumbnail bannerImage posterImage year rating ageRating duration imdbRating createdAt featured trending isNewContent views genres languages trailerUrl hlsUrl videoUrl planRequired totalSeasons';
-    const [moviesRaw, showsRaw] = await Promise.all([
-      MovieModel.find({ status: 'published' }).select(selectFields).limit(300).sort({ createdAt: -1 }).populate('genres', 'name').lean(),
-      TVShowModel.find({ status: 'published' }).select(selectFields).limit(300).sort({ createdAt: -1 }).populate('genres', 'name').lean(),
-    ]);
-    const movies = tagKind(moviesRaw, 'movie').map((m: any) => mapContentItem(m));
+    const showsRaw = await TVShowModel.find({ status: 'published' }).select(selectFields).limit(300).sort({ createdAt: -1 }).populate('genres', 'name').lean();
     const tvShows = tagKind(showsRaw, 'show').map((m: any) => mapContentItem(m));
-    return reply.send({ success: true, data: { movies, tvShows } });
+    // movies kept empty for backward compat — all sections now use TV shows
+    return reply.send({ success: true, data: { movies: tvShows, tvShows } });
   } catch (error: any) {
     logger.error({ error }, 'Error fetching web all content API data');
     return reply.status(500).send({ success: false, message: 'Internal server error', error: error.message });
