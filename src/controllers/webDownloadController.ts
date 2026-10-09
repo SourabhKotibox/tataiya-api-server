@@ -158,9 +158,9 @@ export const webRequestDownload = async (request: FastifyRequest, reply: Fastify
       return reply.status(403).send({ success: false, message: entitlement.message });
     }
 
-    const { contentId, profileId } = (request.body || {}) as {
+    const { contentId, contentType, profileId } = (request.body || {}) as {
       contentId: string;
-      contentType?: 'movie';
+      contentType?: string;
       profileId?: string;
     };
 
@@ -168,10 +168,13 @@ export const webRequestDownload = async (request: FastifyRequest, reply: Fastify
       return reply.status(400).send({ success: false, message: 'Invalid or missing contentId' });
     }
 
-    const movie = await MovieModel.findById(contentId).lean();
-    if (!movie || movie.status !== 'published') {
-      return reply.status(404).send({ success: false, message: 'Movie not found' });
+    const { resolveContent } = await import('../lib/contentResolver');
+    const resolved = await resolveContent(contentId, contentType);
+
+    if (!resolved || (resolved.doc.status && resolved.doc.status !== 'published')) {
+      return reply.status(404).send({ success: false, message: 'Content not found' });
     }
+    const movie = resolved.doc;
 
     if ((movie as any).downloadAllowed === false) {
       return reply.status(400).send({ success: false, message: 'Downloading is disabled for this movie.' });
@@ -201,7 +204,7 @@ export const webRequestDownload = async (request: FastifyRequest, reply: Fastify
 
     const downloadDoc: any = await UserDownloadModel.findOneAndUpdate(
       { userId: userObjectId, contentId, profileId: profileId || null },
-      { $setOnInsert: { contentModelType: 'Movie' } },
+      { $setOnInsert: { contentModelType: resolved.type } },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
 
@@ -210,7 +213,8 @@ export const webRequestDownload = async (request: FastifyRequest, reply: Fastify
       data: {
         id: downloadDoc._id.toString(),
         contentId,
-        contentType: 'movie',
+        contentType: resolved.type === 'Movie' ? 'movie' : 'series',
+        episodeId: resolved.type === 'Episode' ? contentId : undefined,
         title,
         thumbnail,
         duration,
@@ -245,12 +249,17 @@ export const webGetDownloads = async (request: FastifyRequest, reply: FastifyRep
     const result = [];
 
     for (const dl of downloads) {
-      const movie = await MovieModel.findById(dl.contentId).lean();
-      if (!movie || movie.status !== 'published') continue;
+      const { resolveContent } = await import('../lib/contentResolver');
+      const resolved = await resolveContent(dl.contentId.toString(), dl.contentModelType);
+      if (!resolved) continue;
+      const movie = resolved.doc;
+      if (movie.status && movie.status !== 'published') continue;
+
       result.push({
         id: dl._id.toString(),
-        contentId: dl.contentId.toString(),
-        contentType: 'movie',
+        contentId: resolved.type === 'Episode' ? movie.tvShowId?.toString() : dl.contentId.toString(),
+        episodeId: resolved.type === 'Episode' ? dl.contentId.toString() : undefined,
+        contentType: resolved.type === 'Movie' ? 'movie' : 'series',
         title: (movie as any).title,
         thumbnail: toAbsoluteUrl(request, (movie as any).thumbnail || '') || '',
         duration: (movie as any).duration || 0,

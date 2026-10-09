@@ -1,5 +1,5 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { MovieModel } from '../models/Movie';
+import { resolveContent } from '../lib/contentResolver';
 import { logger } from '../lib/logger';
 
 // Get these from env variables in production
@@ -8,9 +8,12 @@ const APP_SCHEME = process.env.APP_SCHEME || 'xoto';
 const APP_STORE_ID = process.env.APP_STORE_ID || '123456789';
 
 // Helper to increment share count dynamically
-const incrementShareCount = async (contentId: string, _contentType?: string) => {
+const incrementShareCount = async (contentId: string, contentType?: string) => {
   try {
-    await MovieModel.findByIdAndUpdate(contentId, { $inc: { shares: 1 } });
+    const resolved = await resolveContent(contentId, contentType);
+    if (resolved) {
+      await (resolved.model as any).findByIdAndUpdate(contentId, { $inc: { shares: 1 } });
+    }
   } catch (err) {
     logger.error({ err, contentId }, 'Failed to increment share count');
   }
@@ -76,14 +79,18 @@ export const handleShareRedirect = async (request: FastifyRequest, reply: Fastif
 export const recordShare = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
     const { contentId } = request.params as { contentId: string };
-    const body = request.body as { contentType?: 'movie' } || {};
+    const body = request.body as { contentType?: string } || {};
     const contentType = body.contentType;
 
     await incrementShareCount(contentId, contentType);
 
     // Fetch the updated count to return in response
-    const movie = await MovieModel.findById(contentId).select('shares').lean();
-    const sharesCount = movie?.shares ?? 0;
+    let sharesCount = 0;
+    const resolved = await resolveContent(contentId, contentType);
+    if (resolved) {
+      const doc = await (resolved.model as any).findById(contentId).select('shares').lean();
+      sharesCount = doc?.shares ?? 0;
+    }
 
     return reply.send({
       success: true,
