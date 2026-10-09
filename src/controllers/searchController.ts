@@ -25,18 +25,42 @@ const getOptionalUserId = (request: FastifyRequest): string | null => {
   }
 };
 
+// Build URL resolver
+const buildUrlResolver = (request: FastifyRequest) =>
+  (url: string | null | undefined): string | null => {
+    if (!url) return null;
+    if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    let relPath = url;
+    if (!relPath.startsWith('/uploads/')) {
+      relPath = relPath.startsWith('uploads/') ? `/${relPath}` : `/uploads/${relPath.startsWith('/') ? relPath.slice(1) : relPath}`;
+    }
+    return `${request.protocol}://${request.hostname}${relPath}`;
+  };
+
 // Unified item mapper
-const mapSearchItem = (item: any, userPlan = 'free', type = 'movie') => {
+const mapSearchItem = (
+  resolveUrl: (url: string | null | undefined) => string | null,
+  item: any,
+  userPlan = 'free',
+  type = 'tvShow'
+) => {
   const contentPlan = item.planRequired || 'free';
   return {
     id: item._id.toString(),
     title: item.title,
     description: item.description,
     shortDescription: item.shortDescription,
-    thumbnail: item.thumbnail,
-    bannerImage: item.bannerImage,
-    posterImage: item.posterImage || item.thumbnail || null,
+    thumbnail: resolveUrl(item.thumbnail),
+    bannerImage: resolveUrl(item.bannerImage),
+    posterImage: resolveUrl(item.posterImage || item.thumbnail || null),
     type: type,
+    contentType: type,
+    totalSeasons: item.totalSeasons || null,
+    genres: (item.genres || []).map((g: any) => g.name || g),
+    genresText: (item.genres || []).map((g: any) => g.name || g).join(' & '),
+    languages: (item.languages || []).map((l: any) => l.name || l),
+    trailerUrl: resolveUrl(item.trailerUrl || null),
+    videoUrl: resolveUrl(item.hlsUrl || null),
     contentPlan,
     planRequired: contentPlan,
     isLocked: isContentLocked(contentPlan, userPlan),
@@ -50,7 +74,11 @@ const mapSearchItem = (item: any, userPlan = 'free', type = 'movie') => {
   };
 };
 
-export const getRecommendations = async (preferredLanguage: string, userPlan = 'free') => {
+export const getRecommendations = async (
+  resolveUrl: (url: string | null | undefined) => string | null,
+  preferredLanguage: string,
+  userPlan = 'free'
+) => {
   let targetLanguageId: mongoose.Types.ObjectId | null = null;
   if (preferredLanguage) {
     const langDoc = await LanguageModel.findOne({ name: new RegExp(`^${preferredLanguage}$`, 'i') }).lean();
@@ -62,9 +90,14 @@ export const getRecommendations = async (preferredLanguage: string, userPlan = '
   const filter: any = { status: 'published' };
   if (targetLanguageId) filter.languages = targetLanguageId;
 
-  const recShows = await TVShowModel.find(filter).sort({ views: -1, createdAt: -1 }).limit(12).lean();
+  const recShows = await TVShowModel.find(filter)
+    .populate('genres', 'name')
+    .populate('languages', 'name')
+    .sort({ views: -1, createdAt: -1 })
+    .limit(12)
+    .lean();
 
-  const recommendationsList = recShows.map(s => mapSearchItem(s, userPlan, 'tvShow'));
+  const recommendationsList = recShows.map(s => mapSearchItem(resolveUrl, s, userPlan, 'tvShow'));
   recommendationsList.sort((a, b) => b.views - a.views);
   return recommendationsList.slice(0, 12);
 };
@@ -96,6 +129,8 @@ export const getSearchPage = async (request: FastifyRequest, reply: FastifyReply
       }
     }
 
+    const resolveUrl = buildUrlResolver(request);
+
     if (!searchTerm) {
       // 1. Initial State: Return Trending Searches & Recommended For You
 
@@ -110,7 +145,7 @@ export const getSearchPage = async (request: FastifyRequest, reply: FastifyReply
       popularShows.forEach(s => trendingSearchesSet.add((s as any).title));
       const trendingSearches = Array.from(trendingSearchesSet).slice(0, 6);
 
-      const recommendations = await getRecommendations(preferredLanguage, userPlan);
+      const recommendations = await getRecommendations(resolveUrl, preferredLanguage, userPlan);
 
       return reply.send({
         success: true,
@@ -154,15 +189,19 @@ export const getSearchPage = async (request: FastifyRequest, reply: FastifyReply
     };
 
     // Search only TV shows
-    const matchedShows = await TVShowModel.find(baseFilter).limit(30).lean();
+    const matchedShows = await TVShowModel.find(baseFilter)
+      .populate('genres', 'name')
+      .populate('languages', 'name')
+      .limit(30)
+      .lean();
 
-    const results = matchedShows.map(s => mapSearchItem(s, userPlan, 'tvShow'));
+    const results = matchedShows.map(s => mapSearchItem(resolveUrl, s, userPlan, 'tvShow'));
 
     // Sort search results by views/popularity
     results.sort((a, b) => b.views - a.views);
 
     if (results.length === 0) {
-      const recommendations = await getRecommendations(preferredLanguage, userPlan);
+      const recommendations = await getRecommendations(resolveUrl, preferredLanguage, userPlan);
       return reply.send({
         success: true,
         data: {

@@ -22,28 +22,32 @@ export const recordView = async (request: FastifyRequest, reply: FastifyReply) =
 
     // ── 2. Parse Params ──────────────────────────────────────────────────────
     const { contentId } = request.params as { contentId: string };
+    const body = (request.body || {}) as { contentType?: string };
 
     if (!mongoose.Types.ObjectId.isValid(contentId)) {
       return reply.status(400).send({ success: false, message: 'Invalid contentId.' });
     }
 
     // ── 3. Verify Content Exists ─────────────────────────────────────────────
-    const content = await MovieModel.findById(contentId).select('views').lean();
-    if (!content) {
+    const { resolveContent } = await import('../lib/contentResolver');
+    const resolved = await resolveContent(contentId, body.contentType);
+    if (!resolved) {
       return reply.status(404).send({ success: false, message: 'Content not found.' });
     }
+
+    const { model, type, doc } = resolved;
 
     // ── 4. Check & record view ───────────────────────────────────────────────
     const existingView = await UserViewModel.findOne({ userId: userObjectId, contentId });
 
     if (existingView) {
       // User has already viewed this content. Do NOT increment views.
-      const c = await MovieModel.findById(contentId).select('views').lean();
+      const current = await (model as any).findById(contentId).select('views').lean();
       return reply.send({
         success: true,
         message: 'View already recorded for this user (views count unchanged).',
         data: {
-          viewsCount: c?.views ?? 0,
+          viewsCount: current?.views ?? 0,
           viewRecorded: false,
         }
       });
@@ -53,14 +57,20 @@ export const recordView = async (request: FastifyRequest, reply: FastifyReply) =
     await UserViewModel.create({
       userId: userObjectId,
       contentId,
-      contentModelType: 'Movie'
+      contentModelType: type,
     });
 
-    const updated = await MovieModel.findByIdAndUpdate(
+    const updated = await (model as any).findByIdAndUpdate(
       contentId,
       { $inc: { views: 1 } },
       { new: true }
     ).select('views').lean();
+
+    // If it's an episode, also increment views on the parent TV show
+    if (type === 'Episode' && doc.tvShowId) {
+      const { TVShowModel } = await import('../models/TVShow');
+      await TVShowModel.findByIdAndUpdate(doc.tvShowId, { $inc: { views: 1 } });
+    }
 
     logger.info({ userId, contentId }, 'User recorded a new view');
 

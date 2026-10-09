@@ -213,6 +213,16 @@ export const getWatchHistory = async (request: FastifyRequest, reply: FastifyRep
 
     const userPlan = await resolveEffectiveUserPlan(userId);
 
+    const resolveUrl = (url: string | null | undefined): string | null => {
+      if (!url) return null;
+      if (url.startsWith('http://') || url.startsWith('https://')) return url;
+      let relPath = url;
+      if (!relPath.startsWith('/uploads/')) {
+        relPath = relPath.startsWith('uploads/') ? `/${relPath}` : `/uploads/${relPath.startsWith('/') ? relPath.slice(1) : relPath}`;
+      }
+      return `${request.protocol}://${request.hostname}${relPath}`;
+    };
+
     // Format the items 
     const items = history.map((h: any) => {
       // Avoid breaking if content was deleted
@@ -221,7 +231,8 @@ export const getWatchHistory = async (request: FastifyRequest, reply: FastifyRep
       // Determine planRequired
       const isEpisode = h.contentModelType === 'Episode';
       const isShow = h.contentModelType === 'TVShow' || isEpisode;
-      const planRequired: 'free' | 'premium' | 'basic' | 'standard' = h.contentId.planRequired || 'free';
+      const planRequired: 'free' | 'premium' | 'basic' | 'standard' =
+        h.contentId.planRequired || (isEpisode && h.contentId.isFree ? 'free' : 'standard');
       const locked = isContentLocked(planRequired, userPlan);
       const accessible = canAccessContent(planRequired, userPlan);
 
@@ -230,9 +241,8 @@ export const getWatchHistory = async (request: FastifyRequest, reply: FastifyRep
       const isAvailable = status === 'published' || isEpisode;
 
       // Stream URL only when unlocked for this user
-      const hlsUrl = accessible
-        ? (h.contentId.hlsUrl || h.contentId.videoUrl || h.contentId.sourceVideoUrl || '')
-        : '';
+      const rawStream = (h.contentId.hlsUrl || h.contentId.videoUrl || h.contentId.sourceVideoUrl || '');
+      const hlsUrl = accessible && rawStream ? (resolveUrl(rawStream) || '') : '';
 
       return {
         id: h._id.toString(),
@@ -245,7 +255,7 @@ export const getWatchHistory = async (request: FastifyRequest, reply: FastifyRep
           : h.contentId.title,
         season: isEpisode ? h.contentId.season : undefined,
         episode: isEpisode ? h.contentId.episode : undefined,
-        thumbnail: h.contentId.thumbnail || h.contentId.posterImage,
+        thumbnail: resolveUrl(h.contentId.thumbnail || h.contentId.posterImage),
         progressPercent: h.progressPercent,
         progressSeconds: h.progressSeconds,
         durationSeconds: h.durationSeconds,
