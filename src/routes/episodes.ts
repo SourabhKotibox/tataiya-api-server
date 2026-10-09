@@ -10,6 +10,7 @@ import {
   toggleEpisodeLock,
   getEpisodeProcessingStatus,
   reprocessEpisodeHls,
+  backfillEpisodeDurations,
 } from '../controllers/episodeController';
 
 const episodes: FastifyPluginAsync = async (fastify) => {
@@ -22,6 +23,8 @@ const episodes: FastifyPluginAsync = async (fastify) => {
   fastify.patch('/:id/lock', { onRequest: [requirePermission('tvShows', 'canEdit')] }, toggleEpisodeLock);
   fastify.get('/:id/processing-status', { onRequest: [requirePermission('tvShows', 'canView')] }, getEpisodeProcessingStatus);
   fastify.post('/:id/reprocess', { onRequest: [requirePermission('tvShows', 'canEdit')] }, reprocessEpisodeHls);
+  // Admin utility: probe ffprobe duration for all episodes with missing duration
+  fastify.post('/backfill-durations', { onRequest: [requirePermission('tvShows', 'canEdit')] }, backfillEpisodeDurations);
 };
 
 export default episodes;

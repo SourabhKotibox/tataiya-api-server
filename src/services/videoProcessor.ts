@@ -162,6 +162,29 @@ const probeResolution = async (inputPath: string): Promise<{ width: number; heig
 };
 
 /**
+ * Probe source video duration using ffprobe.
+ * Returns duration in seconds (float) or null on failure.
+ */
+const probeDuration = async (inputPath: string): Promise<number | null> => {
+  try {
+    const output = await runCommand(ffprobePath, [
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      inputPath,
+    ]);
+    const val = parseFloat(output.trim());
+    if (!isNaN(val) && val > 0) return Math.round(val);
+  } catch (err) {
+    logger.warn({ err }, 'ffprobe duration detection failed');
+  }
+  return null;
+};
+
+// Public export so controllers can probe duration without triggering a full transcode
+export const probeVideoDuration = probeDuration;
+
+/**
  * Filter quality ladder to only include renditions whose height
  * does not exceed the source video's height. Always guarantees at least 1 rendition.
  */
@@ -257,12 +280,15 @@ export const transcodeHlsMultiResolution = async (options: {
     }
     ensureDir(hlsFolder);
 
-    // ── Detect source resolution & filter quality ladder ───────────────────
-    const sourceRes = await probeResolution(ffmpegInput);
+    // ── Detect source resolution & duration ────────────────────────────────
+    const [sourceRes, detectedDurationSeconds] = await Promise.all([
+      probeResolution(ffmpegInput),
+      probeDuration(ffmpegInput),
+    ]);
     const sourceHeight = sourceRes?.height ?? 1080;
     const qualities = filterQualitiesByResolution(sourceHeight);
     logger.info(
-      { id, sourceHeight, qualityCount: qualities.length, mode: 'sequential-safe' },
+      { id, sourceHeight, detectedDurationSeconds, qualityCount: qualities.length, mode: 'sequential-safe' },
       'Starting HLS transcoding'
     );
 
@@ -270,7 +296,7 @@ export const transcodeHlsMultiResolution = async (options: {
     const revision = folderType === 'episodes' ? `/${Date.now()}` : '';
     const s3Prefix = `hls/${folderType}/${id}${revision}`;
 
-    return await transcodeHlsSequential({
+    const hlsResult = await transcodeHlsSequential({
       startSeconds,
       duration,
       qualities,
@@ -282,6 +308,11 @@ export const transcodeHlsMultiResolution = async (options: {
       s3Active,
       s3Prefix
     });
+
+    return {
+      ...hlsResult,
+      detectedDurationSeconds,
+    };
   } finally {
     if (tempSourcePath && fs.existsSync(tempSourcePath)) {
       try {
@@ -552,12 +583,27 @@ export const processEpisodeHls = async (episodeId: Types.ObjectId | string, sour
       folderType: 'episodes', // Isolated from movies
     });
 
-    await EpisodeModel.findByIdAndUpdate(episodeId, {
-      hlsUrl:          result.hlsUrl,
-      videoQualities:  result.videoQualities,
-      processingStatus:'ready',
-      processingError: null,
-    });
+    // Build the update object — always set hlsUrl + status
+    const episodeUpdate: any = {
+      hlsUrl:           result.hlsUrl,
+      videoQualities:   result.videoQualities,
+      processingStatus: 'ready',
+      processingError:  null,
+    };
+
+    // Auto-save detected duration (only update if not already set by admin)
+    if (result.detectedDurationSeconds && result.detectedDurationSeconds > 0) {
+      const existing = await EpisodeModel.findById(episodeId).select('duration').lean();
+      if (!existing?.duration || existing.duration === 0) {
+        episodeUpdate.duration = result.detectedDurationSeconds;
+        logger.info(
+          { episodeId, detectedDurationSeconds: result.detectedDurationSeconds },
+          'Auto-saved episode duration from ffprobe'
+        );
+      }
+    }
+
+    await EpisodeModel.findByIdAndUpdate(episodeId, episodeUpdate);
 
     logger.info({ episodeId, hlsUrl: result.hlsUrl }, 'Episode HLS processing complete');
   } catch (error: any) {

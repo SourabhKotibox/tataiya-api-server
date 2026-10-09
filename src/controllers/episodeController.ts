@@ -66,11 +66,22 @@ export const getAllEpisodes = async (request: FastifyRequest, reply: FastifyRepl
       EpisodeModel.countDocuments(filter),
     ]);
 
+    const formatDuration = (seconds: number | undefined | null): string | null => {
+      if (!seconds || seconds === 0) return null;
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0 && s > 0) return `${m}m ${s}s`;
+      return `${m}m`;
+    };
+
     const data = episodes.map((e) => ({
       ...e,
       id: e._id?.toString(),
       showName: (e.tvShowId as any)?.title || '',
       showThumbnail: (e.tvShowId as any)?.thumbnail || '',
+      durationFormatted: formatDuration(e.duration),
     }));
 
     return reply.send({
@@ -107,9 +118,23 @@ export const getEpisodeById = async (request: FastifyRequest, reply: FastifyRepl
       return reply.status(404).send({ success: false, error: 'Episode not found' });
     }
 
+    const formatDuration = (seconds: number | undefined | null): string | null => {
+      if (!seconds || seconds === 0) return null;
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0 && s > 0) return `${m}m ${s}s`;
+      return `${m}m`;
+    };
+
     return reply.send({
       success: true,
-      data: { ...episode, id: episode._id?.toString() },
+      data: {
+        ...episode,
+        id: episode._id?.toString(),
+        durationFormatted: formatDuration(episode.duration),
+      },
     });
   } catch (error: any) {
     logger.error({ error }, 'Error getting episode by ID');
@@ -514,6 +539,72 @@ export const reprocessEpisodeHls = async (request: any, reply: any) => {
     });
   } catch (error: any) {
     logger.error({ error }, 'Error queueing episode HLS reprocess');
+    return reply.status(500).send({ success: false, error: error.message });
+  }
+};
+
+/**
+ * POST /admin/episodes/backfill-durations
+ * Scans all episodes with missing or zero duration and probes duration from
+ * the source video using ffprobe — without triggering a full re-transcode.
+ * Episodes that already have a non-zero duration are skipped.
+ */
+export const backfillEpisodeDurations = async (request: any, reply: any) => {
+  try {
+    // Find episodes with missing/zero duration that have a usable source
+    const episodes = await EpisodeModel.find({
+      $or: [{ duration: { $exists: false } }, { duration: 0 }, { duration: null }],
+      $or: [
+        { sourceVideoUrl: { $exists: true, $ne: null, $ne: '' } },
+        { hlsUrl: { $exists: true, $ne: null, $ne: '' } },
+      ],
+    })
+      .select('_id title sourceVideoUrl hlsUrl duration')
+      .lean();
+
+    const { probeDurationFromUrl } = await import('../services/videoProcessor');
+    if (typeof probeDurationFromUrl !== 'function') {
+      // Fallback: run inline probe
+    }
+
+    let updated = 0;
+    let failed = 0;
+    const results: any[] = [];
+
+    for (const ep of episodes) {
+      const source = (ep as any).sourceVideoUrl || '';
+      if (!source || /.m3u8(?:[?#]|$)/i.test(source)) {
+        failed++;
+        results.push({ id: ep._id.toString(), title: ep.title, status: 'skipped', reason: 'No raw source video' });
+        continue;
+      }
+
+      try {
+        // Use ffprobe directly via the imported service
+        const { probeVideoDuration } = await import('../services/videoProcessor');
+        const duration = await probeVideoDuration(source);
+
+        if (duration && duration > 0) {
+          await EpisodeModel.findByIdAndUpdate(ep._id, { duration });
+          updated++;
+          results.push({ id: ep._id.toString(), title: ep.title, status: 'updated', duration });
+        } else {
+          failed++;
+          results.push({ id: ep._id.toString(), title: ep.title, status: 'failed', reason: 'Could not detect duration' });
+        }
+      } catch (err: any) {
+        failed++;
+        results.push({ id: ep._id.toString(), title: ep.title, status: 'failed', reason: err.message });
+      }
+    }
+
+    return reply.send({
+      success: true,
+      message: `Backfill complete. Updated: ${updated}, Failed/Skipped: ${failed}`,
+      data: { total: episodes.length, updated, failed, results },
+    });
+  } catch (error: any) {
+    logger.error({ error }, 'Error backfilling episode durations');
     return reply.status(500).send({ success: false, error: error.message });
   }
 };
