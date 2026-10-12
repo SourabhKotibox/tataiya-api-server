@@ -2,7 +2,9 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { MovieModel } from '../models/Movie';
 import { TVShowModel } from '../models/TVShow';
 import { UserLikeModel } from '../models/UserLike';
+import { UserWishlistModel } from '../models/UserWishlist';
 import { UserModel } from '../models/User';
+import mongoose from 'mongoose';
 import { LanguageModel } from '../models/Language';
 import { logger } from '../lib/logger';
 import {
@@ -53,6 +55,7 @@ const mapContentItem = (
   type: 'movie' | 'show' = 'show',
   episodeTrailerUrl: string | null = null,
   episodeVideoUrl: string | null = null,
+  isWishlisted = false,
 ) => {
   const contentPlan = item.planRequired || item.plan || 'free';
   const locked = isContentLocked(contentPlan, userPlan);
@@ -81,6 +84,14 @@ const mapContentItem = (
     views: item.views || 0,
     likeCount,
     isLikedByUser,
+    isLiked: isLikedByUser,
+    liked: isLikedByUser,
+    isWishlisted,
+    wishlisted: isWishlisted,
+    isWishlist: isWishlisted,
+    inWishlist: isWishlisted,
+    is_wishlist: isWishlisted,
+    is_wishlisted: isWishlisted,
     shares: item.shares || 0,
     shareUrl: buildShareUrl(item._id.toString(), type === "show" ? "show" : "movie"),
     featured: item.featured,
@@ -261,18 +272,25 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
       }
     }
 
-    // ── Fetch like status for unique items ────────────────────────────────────
+    // ── Fetch like & wishlist status for unique items ────────────────────────
     const uniqueIds = uniqueContents.map(c => c._id);
     const likedContentIdSet = new Set<string>();
+    const wishlistedContentIdSet = new Set<string>();
 
     if (userId && uniqueIds.length > 0) {
-      const userLikes = await UserLikeModel.find({
-        userId,
-        contentId: { $in: uniqueIds },
-      })
-        .select('contentId')
-        .lean();
+      const userObjectId = new mongoose.Types.ObjectId(userId);
+      const [userLikes, userWishlists] = await Promise.all([
+        UserLikeModel.find({
+          userId: userObjectId,
+          contentId: { $in: uniqueIds },
+        }).select('contentId').lean(),
+        UserWishlistModel.find({
+          userId: userObjectId,
+          contentId: { $in: uniqueIds },
+        }).select('contentId').lean(),
+      ]);
       userLikes.forEach(l => likedContentIdSet.add(l.contentId.toString()));
+      userWishlists.forEach(w => wishlistedContentIdSet.add(w.contentId.toString()));
     }
 
     // ── Map to response ───────────────────────────────────────────────────────
@@ -280,6 +298,7 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
       const cid = content._id.toString();
       const likeCount: number = content.likes || 0;
       const isLikedByUser: boolean = likedContentIdSet.has(cid);
+      const isWishlisted: boolean = wishlistedContentIdSet.has(cid);
       const isShow = content._type === 'show';
       const epDoc = isShow ? episodesMap.get(cid) : null;
       const epTrailer = epDoc?.trailerUrl || null;
@@ -294,6 +313,7 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
         content._type || 'show',
         epTrailer,
         epVideo,
+        isWishlisted,
       );
     });
 

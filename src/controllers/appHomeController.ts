@@ -4,6 +4,7 @@ import { MovieModel } from '../models/Movie';
 import { TVShowModel } from '../models/TVShow';
 import { SectionModel } from '../models/Section';
 import { UserLikeModel } from '../models/UserLike';
+import { UserWishlistModel } from '../models/UserWishlist';
 import { UserModel } from '../models/User';
 import { LanguageModel } from '../models/Language';
 import { UserWatchProgressModel } from '../models/UserWatchProgress';
@@ -83,6 +84,7 @@ const mapContentItem = (
   likeCount = 0,
   isLikedByUser = false,
   userPlan = 'free',
+  isWishlisted = false,
 ) => {
   const isShow = item.contentType === 'tvShow' || item.type === 'tvShow' || item.type === 'show' || !!item.totalSeasons;
   const contentType = isShow ? 'tvShow' : 'movie';
@@ -105,8 +107,16 @@ const mapContentItem = (
   views: item.views || 0,
   likeCount,
   isLikedByUser,
+  isLiked: isLikedByUser,
+  liked: isLikedByUser,
+  isWishlisted,
+  wishlisted: isWishlisted,
+  isWishlist: isWishlisted,
+  inWishlist: isWishlisted,
+  is_wishlist: isWishlisted,
+  is_wishlisted: isWishlisted,
   shares: item.shares || 0,
-  shareUrl: buildShareUrl(item._id.toString()),
+  shareUrl: buildShareUrl(item._id.toString(), isShow ? 'show' : 'movie'),
   featured: item.featured,
   trending: item.trending,
   isNewContent: item.isNewContent,
@@ -156,6 +166,7 @@ const mapBanner = (
   likeCount = 0,
   isLikedByUser = false,
   userPlan = 'free',
+  isWishlisted = false,
 ) => {
   const content = banner.contentId;
   const thumbnail = resolveUrl(content?.thumbnail || banner.imageUrl);
@@ -170,7 +181,7 @@ const mapBanner = (
     ctaText: banner.ctaText,
     ctaLink: banner.ctaLink,
     contentId: banner.contentId?._id?.toString(),
-    content: content ? mapContentItem(content, resolveUrl, likeCount, isLikedByUser, userPlan) : undefined,
+    content: content ? mapContentItem(content, resolveUrl, likeCount, isLikedByUser, userPlan, isWishlisted) : undefined,
     type: banner.type,
     contentType: banner.contentType,
     position: banner.position,
@@ -356,14 +367,23 @@ export const getHomePage = async (request: FastifyRequest, reply: FastifyReply) 
 
     const allContentIds = Array.from(allContentIdsSet).map(id => new mongoose.Types.ObjectId(id));
 
-    // Get user likes
+    // Get user likes and wishlists
     const likedContentIdSet = new Set<string>();
+    const wishlistedContentIdSet = new Set<string>();
     if (userId && allContentIds.length > 0) {
-      const userLikes = await UserLikeModel.find({
-        userId,
-        contentId: { $in: allContentIds },
-      }).select('contentId').lean();
+      const userObjectId = new mongoose.Types.ObjectId(userId);
+      const [userLikes, userWishlists] = await Promise.all([
+        UserLikeModel.find({
+          userId: userObjectId,
+          contentId: { $in: allContentIds },
+        }).select('contentId').lean(),
+        UserWishlistModel.find({
+          userId: userObjectId,
+          contentId: { $in: allContentIds },
+        }).select('contentId').lean(),
+      ]);
       userLikes.forEach(l => likedContentIdSet.add(l.contentId.toString()));
+      userWishlists.forEach(w => wishlistedContentIdSet.add(w.contentId.toString()));
     }
 
     // ── Mapping ───────────────────────────────────────────────────────────────
@@ -380,7 +400,8 @@ export const getHomePage = async (request: FastifyRequest, reply: FastifyReply) 
         const cid = item._id.toString();
         const likeCount = item.likes || 0;
         const isLikedByUser = likedContentIdSet.has(cid);
-        return mapContentItem(item, resolveUrl, likeCount, isLikedByUser, userPlan);
+        const isWishlisted = wishlistedContentIdSet.has(cid);
+        return mapContentItem(item, resolveUrl, likeCount, isLikedByUser, userPlan, isWishlisted);
       }),
     }));
 
@@ -404,8 +425,9 @@ export const getHomePage = async (request: FastifyRequest, reply: FastifyReply) 
         const cid = item._id.toString();
         const likeCount = item.likes || 0;
         const isLikedByUser = likedContentIdSet.has(cid);
+        const isWishlisted = wishlistedContentIdSet.has(cid);
 
-        const mapped: any = mapContentItem(item, resolveUrl, likeCount, isLikedByUser, userPlan);
+        const mapped: any = mapContentItem(item, resolveUrl, likeCount, isLikedByUser, userPlan, isWishlisted);
 
         mapped.watchProgress = {
           progressSeconds: progress.progressSeconds,
@@ -494,19 +516,26 @@ export const getAppBanners = async (request: FastifyRequest, reply: FastifyReply
       .filter(b => b.contentId)
       .map(b => new mongoose.Types.ObjectId((b.contentId as any)._id.toString()));
 
-    // User likes
+    // User likes and wishlists
     const likedContentIdSet = new Set<string>();
+    const wishlistedContentIdSet = new Set<string>();
     if (userId && allContentIds.length > 0) {
-      const userLikes = await UserLikeModel.find({ userId, contentId: { $in: allContentIds } }).select('contentId').lean();
+      const userObjectId = new mongoose.Types.ObjectId(userId);
+      const [userLikes, userWishlists] = await Promise.all([
+        UserLikeModel.find({ userId: userObjectId, contentId: { $in: allContentIds } }).select('contentId').lean(),
+        UserWishlistModel.find({ userId: userObjectId, contentId: { $in: allContentIds } }).select('contentId').lean(),
+      ]);
       userLikes.forEach(l => likedContentIdSet.add(l.contentId.toString()));
+      userWishlists.forEach(w => wishlistedContentIdSet.add(w.contentId.toString()));
     }
 
     const mappedBanners = banners.map(banner => {
-      if (!banner.contentId) return mapBanner(banner, resolveUrl, 0, false, userPlan);
+      if (!banner.contentId) return mapBanner(banner, resolveUrl, 0, false, userPlan, false);
       const cid = (banner.contentId as any)._id.toString();
       const likeCount = (banner.contentId as any).likes || 0;
       const isLikedByUser = likedContentIdSet.has(cid);
-      return mapBanner(banner, resolveUrl, likeCount, isLikedByUser, userPlan);
+      const isWishlisted = wishlistedContentIdSet.has(cid);
+      return mapBanner(banner, resolveUrl, likeCount, isLikedByUser, userPlan, isWishlisted);
     });
 
     return reply.send({

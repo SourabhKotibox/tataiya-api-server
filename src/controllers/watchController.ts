@@ -261,9 +261,18 @@ export const getWatchData = async (request: FastifyRequest, reply: FastifyReply)
     let isDownloaded = false;
     if (userObjectId) {
       const [likeDoc, wishlistDoc, downloadDoc] = await Promise.all([
-        UserLikeModel.findOne({ userId: userObjectId, contentId: content._id }).lean(),
-        UserWishlistModel.findOne({ userId: userObjectId, contentId: content._id }).lean(),
-        UserDownloadModel.findOne({ userId: userObjectId, contentId: content._id }).lean(),
+        UserLikeModel.findOne({
+          userId: userObjectId,
+          contentId: { $in: [content._id, content._id.toString()] },
+        }).lean(),
+        UserWishlistModel.findOne({
+          userId: userObjectId,
+          contentId: { $in: [content._id, content._id.toString()] },
+        }).lean(),
+        UserDownloadModel.findOne({
+          userId: userObjectId,
+          contentId: { $in: [content._id, content._id.toString()] },
+        }).lean(),
       ]);
       isLikedByUser = !!likeDoc;
       isWishlisted = !!wishlistDoc;
@@ -400,8 +409,16 @@ export const getWatchData = async (request: FastifyRequest, reply: FastifyReply)
           views: content.views || 0,
           likeCount: content.likes || 0,
           isLikedByUser,
+          isLiked: isLikedByUser,
+          liked: isLikedByUser,
           isWishlisted,
+          wishlisted: isWishlisted,
+          isWishlist: isWishlisted,
+          inWishlist: isWishlisted,
+          is_wishlist: isWishlisted,
+          is_wishlisted: isWishlisted,
           isDownloaded,
+          downloaded: isDownloaded,
           shareUrl: buildShareUrl(content._id.toString(), isSeries ? 'show' : 'movie'),
 
           cast,

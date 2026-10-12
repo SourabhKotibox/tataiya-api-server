@@ -86,8 +86,14 @@ export const getSeriesDetail = async (request: FastifyRequest, reply: FastifyRep
     if (userId) {
       const userObjectId = new mongoose.Types.ObjectId(userId);
       const [likeDoc, wishlistDoc] = await Promise.all([
-        UserLikeModel.findOne({ userId: userObjectId, contentId: series._id }).lean(),
-        UserWishlistModel.findOne({ userId: userObjectId, contentId: series._id }).lean(),
+        UserLikeModel.findOne({
+          userId: userObjectId,
+          contentId: { $in: [series._id, series._id.toString()] },
+        }).lean(),
+        UserWishlistModel.findOne({
+          userId: userObjectId,
+          contentId: { $in: [series._id, series._id.toString()] },
+        }).lean(),
       ]);
       isLikedByUser = !!likeDoc;
       isWishlisted = !!wishlistDoc;
@@ -232,8 +238,14 @@ export const getSeriesDetail = async (request: FastifyRequest, reply: FastifyRep
         shares: series.shares || 0,
         
         isLikedByUser,
+        isLiked: isLikedByUser,
+        liked: isLikedByUser,
         isWishlisted,
         wishlisted,
+        isWishlist: isWishlisted,
+        inWishlist: isWishlisted,
+        is_wishlist: isWishlisted,
+        is_wishlisted: isWishlisted,
         
         shareUrl: buildShareUrl(series._id.toString(), "show"),
         

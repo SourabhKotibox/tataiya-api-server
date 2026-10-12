@@ -11,6 +11,7 @@ import { UserDownloadModel } from '../models/UserDownload';
 import { UserWishlistModel } from '../models/UserWishlist';
 import { UserLikeModel } from '../models/UserLike';
 import { MovieModel } from '../models/Movie';
+import { TVShowModel } from '../models/TVShow';
 import { UserWatchProgressModel } from '../models/UserWatchProgress';
 import { ReviewModel } from '../models/Review';
 import { SubscriptionModel } from '../models/Subscription';
@@ -216,17 +217,23 @@ export const getAppProfile = async (request: FastifyRequest, reply: FastifyReply
         .lean();
 
       if (downloads.length > 0) {
-        const movieIds = downloads.map(d => d.contentId);
+        const contentIds = downloads.map(d => d.contentId);
 
-        const movies = movieIds.length > 0
-          ? await MovieModel.find({ _id: { $in: movieIds } }).select('title thumbnail duration year rating').lean()
-          : [];
+        const [movies, shows] = contentIds.length > 0
+          ? await Promise.all([
+              MovieModel.find({ _id: { $in: contentIds } }).select('title thumbnail duration year rating type contentType').lean(),
+              TVShowModel.find({ _id: { $in: contentIds } }).select('title thumbnail duration year rating type contentType').lean(),
+            ])
+          : [[], []];
 
-        const movieMap = new Map(movies.map(m => [m._id.toString(), m]));
+        const itemMap = new Map();
+        movies.forEach(m => itemMap.set(m._id.toString(), { ...m, _kind: 'movie' }));
+        shows.forEach(s => itemMap.set(s._id.toString(), { ...s, _kind: 'show' }));
 
         downloadsList = downloads.map(item => {
-          const m = movieMap.get(item.contentId.toString());
+          const m: any = itemMap.get(item.contentId.toString());
           if (!m) return null;
+          const isShow = m._kind === 'show' || m.contentType === 'tvShow' || item.contentModelType === 'TVShow';
           return {
             id: item.contentId.toString(),
             downloadId: item._id.toString(),
@@ -236,7 +243,10 @@ export const getAppProfile = async (request: FastifyRequest, reply: FastifyReply
             duration: m.duration,
             year: m.year,
             rating: m.rating,
-            type: 'movie',
+            type: isShow ? 'tvShow' : 'movie',
+            contentType: isShow ? 'tvShow' : 'movie',
+            isDownloaded: true,
+            downloaded: true,
             downloadedAt: item.createdAt
           };
         }).filter(Boolean);
@@ -248,29 +258,43 @@ export const getAppProfile = async (request: FastifyRequest, reply: FastifyReply
         .lean();
 
       if (wishlistItems.length > 0) {
-        const wMovieIds = wishlistItems.map(i => i.contentId);
+        const wIds = wishlistItems.map(i => i.contentId);
 
-        const wMovies = wMovieIds.length > 0
-          ? await MovieModel.find({ _id: { $in: wMovieIds } }).select('title thumbnail bannerImage posterImage year rating duration views type').lean()
-          : [];
+        const [wMovies, wShows] = wIds.length > 0
+          ? await Promise.all([
+              MovieModel.find({ _id: { $in: wIds } }).select('title thumbnail bannerImage posterImage year rating duration views type contentType').lean(),
+              TVShowModel.find({ _id: { $in: wIds } }).select('title thumbnail bannerImage posterImage year rating duration views type contentType').lean(),
+            ])
+          : [[], []];
 
-        const wMovieMap = new Map(wMovies.map(m => [m._id.toString(), m]));
+        const wMap = new Map();
+        wMovies.forEach(m => wMap.set(m._id.toString(), { ...m, _kind: 'movie' }));
+        wShows.forEach(s => wMap.set(s._id.toString(), { ...s, _kind: 'show' }));
 
         wishlistList = wishlistItems.map(item => {
-          const c: any = wMovieMap.get(item.contentId.toString());
+          const c: any = wMap.get(item.contentId.toString());
           if (!c) return null;
+          const isShow = c._kind === 'show' || c.contentType === 'tvShow' || item.contentModelType === 'TVShow';
 
           return {
             id: c._id.toString(),
+            contentId: item.contentId.toString(),
             title: c.title,
             thumbnail: c.thumbnail,
             bannerImage: c.bannerImage || null,
             posterImage: c.posterImage || c.thumbnail || '',
-            type: 'movie',
+            type: isShow ? 'tvShow' : 'movie',
+            contentType: isShow ? 'tvShow' : 'movie',
             views: c.views || 0,
             year: c.year || null,
             rating: c.rating || null,
             duration: c.duration || null,
+            isWishlisted: true,
+            wishlisted: true,
+            isWishlist: true,
+            inWishlist: true,
+            is_wishlist: true,
+            is_wishlisted: true,
             addedAt: item.createdAt
           };
         }).filter(Boolean);
@@ -288,28 +312,39 @@ export const getAppProfile = async (request: FastifyRequest, reply: FastifyReply
       }));
 
       if (likedItems.length > 0) {
-        const lMovieIds = likedItems.map(i => i.contentId);
+        const lIds = likedItems.map(i => i.contentId);
 
-        const lMovies = lMovieIds.length > 0
-          ? await MovieModel.find({ _id: { $in: lMovieIds } }).select('title thumbnail bannerImage posterImage year rating duration views type').lean()
-          : [];
+        const [lMovies, lShows] = lIds.length > 0
+          ? await Promise.all([
+              MovieModel.find({ _id: { $in: lIds } }).select('title thumbnail bannerImage posterImage year rating duration views type contentType').lean(),
+              TVShowModel.find({ _id: { $in: lIds } }).select('title thumbnail bannerImage posterImage year rating duration views type contentType').lean(),
+            ])
+          : [[], []];
 
-        const lMovieMap = new Map(lMovies.map(m => [m._id.toString(), m]));
+        const lMap = new Map();
+        lMovies.forEach(m => lMap.set(m._id.toString(), { ...m, _kind: 'movie' }));
+        lShows.forEach(s => lMap.set(s._id.toString(), { ...s, _kind: 'show' }));
 
         likesList = likedItems.map(item => {
-          const c: any = lMovieMap.get(item.contentId.toString());
+          const c: any = lMap.get(item.contentId.toString());
           if (!c) return null;
+          const isShow = c._kind === 'show' || c.contentType === 'tvShow' || item.contentModelType === 'TVShow';
           return {
             id: c._id.toString(),
+            contentId: item.contentId.toString(),
             title: c.title,
             thumbnail: c.thumbnail,
             bannerImage: c.bannerImage || null,
             posterImage: c.posterImage || c.thumbnail || '',
-            type: 'movie',
+            type: isShow ? 'tvShow' : 'movie',
+            contentType: isShow ? 'tvShow' : 'movie',
             views: c.views || 0,
             year: c.year || null,
             rating: c.rating || null,
             duration: c.duration || null,
+            isLikedByUser: true,
+            isLiked: true,
+            liked: true,
             likedAt: item.createdAt
           };
         }).filter(Boolean);
@@ -330,10 +365,11 @@ export const getAppProfile = async (request: FastifyRequest, reply: FastifyReply
 
     // If guest user, fill with actual database content to demonstrate UI
     if (!userId && (downloadsList.length === 0 || wishlistList.length === 0)) {
-      const movies = await MovieModel.find({ status: 'published' }).limit(4).lean();
+      const shows = await TVShowModel.find({ status: 'published' }).limit(4).lean();
+      const fallbackList: any[] = shows.length > 0 ? shows : await MovieModel.find({ status: 'published' }).limit(4).lean();
 
       if (downloadsList.length === 0) {
-        downloadsList = movies.map(m => ({
+        downloadsList = fallbackList.map(m => ({
           id: `seed-dl-${m._id}`,
           contentId: m._id.toString(),
           title: m.title,
@@ -341,23 +377,34 @@ export const getAppProfile = async (request: FastifyRequest, reply: FastifyReply
           duration: m.duration || null,
           year: m.year || null,
           rating: m.rating || null,
-          type: 'movie',
+          type: m.totalSeasons ? 'tvShow' : 'movie',
+          contentType: m.totalSeasons ? 'tvShow' : 'movie',
+          isDownloaded: true,
+          downloaded: true,
           downloadedAt: new Date()
         }));
       }
 
       if (wishlistList.length === 0) {
-        wishlistList = movies.map(m => ({
+        wishlistList = fallbackList.map(m => ({
           id: m._id.toString(),
+          contentId: m._id.toString(),
           title: m.title,
           thumbnail: m.thumbnail,
           bannerImage: m.bannerImage || null,
           posterImage: m.posterImage || m.thumbnail || '',
-          type: 'movie',
+          type: m.totalSeasons ? 'tvShow' : 'movie',
+          contentType: m.totalSeasons ? 'tvShow' : 'movie',
           views: m.views || 0,
           year: m.year || null,
           rating: m.rating || null,
           duration: m.duration || null,
+          isWishlisted: true,
+          wishlisted: true,
+          isWishlist: true,
+          inWishlist: true,
+          is_wishlist: true,
+          is_wishlisted: true,
           addedAt: new Date()
         }));
       }

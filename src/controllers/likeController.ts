@@ -57,9 +57,14 @@ export const toggleLike = async (request: FastifyRequest, reply: FastifyReply) =
       return reply.send({
         success: true,
         message: 'Video unliked successfully',
+        isLikedByUser: false,
+        isLiked: false,
+        liked: false,
         data: {
           likeCount,
           isLikedByUser: false,
+          isLiked: false,
+          liked: false,
         },
       });
     }
@@ -78,9 +83,14 @@ export const toggleLike = async (request: FastifyRequest, reply: FastifyReply) =
     return reply.send({
       success: true,
       message: 'Video liked successfully',
+      isLikedByUser: true,
+      isLiked: true,
+      liked: true,
       data: {
         likeCount,
         isLikedByUser: true,
+        isLiked: true,
+        liked: true,
       },
     });
   } catch (error: any) {
