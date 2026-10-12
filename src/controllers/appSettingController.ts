@@ -188,7 +188,7 @@ export const getHomeTabs = async (request: FastifyRequest, reply: FastifyReply) 
   try {
     const appSetting = await AppSettingModel.findOne({ key: 'home-tabs-config' });
     const tabs = appSetting?.value || [
-      { id: 'movie', name: 'Movies' },
+      { id: 'tvShow', name: 'TV Shows' },
     ];
     return reply.send({ success: true, data: tabs });
   } catch (error: any) {

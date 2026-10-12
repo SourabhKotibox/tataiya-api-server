@@ -553,10 +553,14 @@ export const backfillEpisodeDurations = async (request: any, reply: any) => {
   try {
     // Find episodes with missing/zero duration that have a usable source
     const episodes = await EpisodeModel.find({
-      $or: [{ duration: { $exists: false } }, { duration: 0 }, { duration: null }],
-      $or: [
-        { sourceVideoUrl: { $exists: true, $ne: null, $ne: '' } },
-        { hlsUrl: { $exists: true, $ne: null, $ne: '' } },
+      $and: [
+        { $or: [{ duration: { $exists: false } }, { duration: 0 }, { duration: null }] },
+        {
+          $or: [
+            { sourceVideoUrl: { $exists: true, $nin: [null, ''] } },
+            { hlsUrl: { $exists: true, $nin: [null, ''] } },
+          ],
+        },
       ],
     })
       .select('_id title sourceVideoUrl hlsUrl duration')

@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "tripleminds-master-collection-id-9999",
-    "name": "Triple Minds API (Master Collection)",
-    "description": "Unified Postman collection containing both Admin Panel APIs and Mobile/Web App Frontend APIs, fully extracted from the codebase routes.",
+    "name": "Tataiya OTT API - Master Collection (Updated)",
+    "description": "Complete API collection for Tataiya OTT platform including TV Shows, Episodes, Seasons, Banners, Home Sections, Movies, Music, Watch, Users, and Admin APIs.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -6845,6 +6845,36 @@
                 "description": "API route defined in code file sections.ts"
               },
               "response": []
+            },
+            {
+              "name": "Backfill Episode Durations (ffprobe)",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{admin_token}}",
+                    "type": "text"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json",
+                    "type": "text"
+                  }
+                ],
+                "url": {
+                  "raw": "{{baseUrl}}/api/episodes/backfill-durations",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "api",
+                    "episodes",
+                    "backfill-durations"
+                  ]
+                }
+              },
+              "response": []
             }
           ]
         },
@@ -8287,9 +8317,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/tv-shows",
+                  "raw": "{{baseUrl}}/api/tv-shows",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8316,9 +8346,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/tv-shows/pending-approvals",
+                  "raw": "{{baseUrl}}/api/tv-shows/pending-approvals",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8346,9 +8376,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/tv-shows",
+                  "raw": "{{baseUrl}}/api/tv-shows",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8375,9 +8405,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/tv-shows/item/:id/approve",
+                  "raw": "{{baseUrl}}/api/tv-shows/item/:id/approve",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8407,9 +8437,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/tv-shows/item/:id/reject",
+                  "raw": "{{baseUrl}}/api/tv-shows/item/:id/reject",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8439,9 +8469,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/tv-shows/:id",
+                  "raw": "{{baseUrl}}/api/tv-shows/:id",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8469,9 +8499,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/tv-shows/:id",
+                  "raw": "{{baseUrl}}/api/tv-shows/:id",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8499,9 +8529,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/tv-shows/:id",
+                  "raw": "{{baseUrl}}/api/tv-shows/:id",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8529,9 +8559,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/tv-shows/:id/status",
+                  "raw": "{{baseUrl}}/api/tv-shows/:id/status",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8560,9 +8590,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/tv-shows/:id/featured",
+                  "raw": "{{baseUrl}}/api/tv-shows/:id/featured",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8591,9 +8621,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/tv-shows/:id/trending",
+                  "raw": "{{baseUrl}}/api/tv-shows/:id/trending",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8622,9 +8652,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/tv-shows/:id/processing-status",
+                  "raw": "{{baseUrl}}/api/tv-shows/:id/processing-status",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8658,9 +8688,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/seasons",
+                  "raw": "{{baseUrl}}/api/seasons",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8687,9 +8717,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/seasons",
+                  "raw": "{{baseUrl}}/api/seasons",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8716,9 +8746,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/seasons/:id",
+                  "raw": "{{baseUrl}}/api/seasons/:id",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8746,9 +8776,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/seasons/:id",
+                  "raw": "{{baseUrl}}/api/seasons/:id",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8781,9 +8811,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/episodes",
+                  "raw": "{{baseUrl}}/api/episodes",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8810,9 +8840,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/episodes",
+                  "raw": "{{baseUrl}}/api/episodes",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8839,9 +8869,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/episodes/seasons",
+                  "raw": "{{baseUrl}}/api/episodes/seasons",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8869,9 +8899,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/episodes/:id",
+                  "raw": "{{baseUrl}}/api/episodes/:id",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8899,9 +8929,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/episodes/:id",
+                  "raw": "{{baseUrl}}/api/episodes/:id",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8929,9 +8959,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/episodes/:id",
+                  "raw": "{{baseUrl}}/api/episodes/:id",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8959,9 +8989,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/episodes/:id/lock",
+                  "raw": "{{baseUrl}}/api/episodes/:id/lock",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -8990,9 +9020,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/episodes/:id/processing-status",
+                  "raw": "{{baseUrl}}/api/episodes/:id/processing-status",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -9021,9 +9051,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/episodes/:id/reprocess",
+                  "raw": "{{baseUrl}}/api/episodes/:id/reprocess",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -9057,9 +9087,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/banners",
+                  "raw": "{{baseUrl}}/api/banners",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -9086,9 +9116,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/banners",
+                  "raw": "{{baseUrl}}/api/banners",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -9115,9 +9145,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/banners/from-content",
+                  "raw": "{{baseUrl}}/api/banners/from-content",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -9145,9 +9175,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/banners/item/:bannerId",
+                  "raw": "{{baseUrl}}/api/banners/item/:bannerId",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -9176,9 +9206,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/banners/item/:bannerId",
+                  "raw": "{{baseUrl}}/api/banners/item/:bannerId",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -9207,9 +9237,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/banners/item/:bannerId",
+                  "raw": "{{baseUrl}}/api/banners/item/:bannerId",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -9238,9 +9268,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/banners/bulk-delete",
+                  "raw": "{{baseUrl}}/api/banners/bulk-delete",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -9273,9 +9303,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/sections",
+                  "raw": "{{baseUrl}}/api/sections",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -9302,9 +9332,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/sections/:id",
+                  "raw": "{{baseUrl}}/api/sections/:id",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -9332,9 +9362,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/sections",
+                  "raw": "{{baseUrl}}/api/sections",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -9361,9 +9391,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/sections/reorder",
+                  "raw": "{{baseUrl}}/api/sections/reorder",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -9391,9 +9421,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/sections/:id",
+                  "raw": "{{baseUrl}}/api/sections/:id",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -9421,9 +9451,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/sections/:id",
+                  "raw": "{{baseUrl}}/api/sections/:id",
                   "host": [
-                    "{{base_url}}"
+                    "{{baseUrl}}"
                   ],
                   "path": [
                     "api",
@@ -9437,6 +9467,33 @@
           ]
         }
       ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "admin_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "appAccessToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "accessToken",
+      "value": "",
+      "type": "string"
     }
   ]
 }

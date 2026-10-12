@@ -225,8 +225,7 @@ export const getHomePage = async (request: FastifyRequest, reply: FastifyReply) 
     }
 
     // Get sections from database, or fallback to default
-    const dbSections = await SectionModel.find({
-      contentType: { $in: ['movie', 'tvShow', 'mixed'] as any[] }, isActive: true })
+    const dbSections = await SectionModel.find({ isActive: true })
       .select('key title category contentType sortBy limit position isActive layout showViewAll itemType filter contentSelection manualContentIds')
       .sort({ position: 1 })
       .lean();
@@ -261,22 +260,28 @@ export const getHomePage = async (request: FastifyRequest, reply: FastifyReply) 
       };
 
       const baseFilter: any = { status: 'published' };
-      if (targetLanguageId) {
-        baseFilter.languages = targetLanguageId;
-      }
-
       const filter = buildFilter(baseFilter);
       const sectionContentType = (section as any).contentType;
 
       if (filter) {
-        // Fetch from TVShowModel for tvShow sections, MovieModel for movie sections, both for mixed
+        // Query TV Shows primarily
         if (sectionContentType === 'movie') {
+          // If explicitly movie, try movies first; if empty, fall back to TV Shows so section isn't empty
           content = await MovieModel.find(filter)
             .sort(section.sortBy)
             .limit(section.limit)
             .populate('languages', 'name')
             .populate('genres', 'name')
             .lean();
+          if (content.length === 0) {
+            const fallbackShows = await TVShowModel.find(filter)
+              .sort(section.sortBy)
+              .limit(section.limit)
+              .populate('languages', 'name')
+              .populate('genres', 'name')
+              .lean();
+            content = fallbackShows.map(s => ({ ...s, contentType: 'tvShow' }));
+          }
         } else if (sectionContentType === 'mixed') {
           const [movies, shows] = await Promise.all([
             MovieModel.find(filter).sort(section.sortBy).limit(Math.ceil(section.limit / 2)).populate('languages', 'name').populate('genres', 'name').lean(),
@@ -286,6 +291,15 @@ export const getHomePage = async (request: FastifyRequest, reply: FastifyReply) 
             ...movies.map(m => ({ ...m, contentType: 'movie' })),
             ...shows.map(s => ({ ...s, contentType: 'tvShow' })),
           ];
+          if (content.length === 0) {
+            const fallbackShows = await TVShowModel.find(filter)
+              .sort(section.sortBy)
+              .limit(section.limit)
+              .populate('languages', 'name')
+              .populate('genres', 'name')
+              .lean();
+            content = fallbackShows.map(s => ({ ...s, contentType: 'tvShow' }));
+          }
         } else {
           // Default: TV Shows
           content = await TVShowModel.find(filter)
@@ -418,18 +432,24 @@ export const getHomePage = async (request: FastifyRequest, reply: FastifyReply) 
 
     // Get Custom Tab Name
     const appSetting = await AppSettingModel.findOne({ key: 'home-tabs-config' }).lean();
-    let tabName = 'Movies';
+    let tab = 'tvShow';
+    let tabName = 'TV Shows';
     if (appSetting && appSetting.value && Array.isArray(appSetting.value)) {
-      const tabConfig = appSetting.value.find((t: any) => t.id === 'movie');
-      if (tabConfig && tabConfig.name) {
-        tabName = tabConfig.name;
+      const tvConfig = appSetting.value.find((t: any) => t.id === 'tvShow');
+      const movieConfig = appSetting.value.find((t: any) => t.id === 'movie');
+      if (tvConfig && tvConfig.name) {
+        tab = 'tvShow';
+        tabName = tvConfig.name;
+      } else if (movieConfig && movieConfig.name) {
+        tab = 'tvShow'; // Keep mobile app feed on tvShow
+        tabName = movieConfig.name;
       }
     }
 
     return reply.send({
       success: true,
       data: {
-        tab: 'movie',
+        tab,
         tabName,
         sections: mappedSections,
       },
@@ -492,7 +512,7 @@ export const getAppBanners = async (request: FastifyRequest, reply: FastifyReply
     return reply.send({
       success: true,
       data: {
-        tab: 'movie',
+        tab: 'tvShow',
         banners: mappedBanners,
       },
     });
