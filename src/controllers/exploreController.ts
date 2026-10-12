@@ -50,11 +50,22 @@ const mapContentItem = (
   likeCount = 0,
   isLikedByUser = false,
   userPlan = 'free',
-  type: 'movie' | 'show' = 'movie',
+  type: 'movie' | 'show' = 'show',
+  episodeTrailerUrl: string | null = null,
+  episodeVideoUrl: string | null = null,
 ) => {
   const contentPlan = item.planRequired || item.plan || 'free';
   const locked = isContentLocked(contentPlan, userPlan);
   const accessible = canAccessContent(contentPlan, userPlan);
+
+  const rawTrailer = item.trailerUrl || episodeTrailerUrl;
+  const rawVideo = item.hlsUrl || episodeVideoUrl;
+
+  const trailerUrl = toAbsoluteUrl(request, rawTrailer) || null;
+  // If trailerUrl is still missing for TV show, fall back to episode video stream for short preview
+  const effectiveTrailerUrl = trailerUrl || toAbsoluteUrl(request, rawVideo) || null;
+  const videoUrl = accessible ? (toAbsoluteUrl(request, rawVideo) || null) : null;
+
   return {
     id: item._id.toString(),
     title: item.title,
@@ -81,8 +92,8 @@ const mapContentItem = (
     status: item.status,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
-    videoUrl: accessible ? (toAbsoluteUrl(request, item.hlsUrl) || null) : null,
-    trailerUrl: toAbsoluteUrl(request, item.trailerUrl) || null,
+    videoUrl,
+    trailerUrl: effectiveTrailerUrl,
     contentPlan,
     planRequired: contentPlan,
     isLocked: locked,
@@ -164,36 +175,29 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
 
     // ── Fetch a larger batch to allow for deduplication ──────────────────────
     const fetchLimit = limit * FETCH_MULTIPLIER;
-
-    const langFilter = { ...filter };
-    if (targetLanguageId) {
-      langFilter.languages = targetLanguageId;
-    }
-    
-    // To properly support pagination when merging two collections, we fetch from offset 0
-    // to offset + fetchLimit from BOTH collections, merge/sort, and then slice.
     const combinedLimit = offset + fetchLimit;
     
-    const [rawMovies, rawShows] = await Promise.all([
-      MovieModel.find(langFilter)
+    // Primarily fetch TV Shows (movies as secondary/legacy)
+    const [rawShows, rawMovies] = await Promise.all([
+      TVShowModel.find(filter)
         .sort(sortBy)
         .limit(combinedLimit)
         .populate('languages', 'name')
         .populate('genres', 'name')
         .lean(),
-      TVShowModel.find(langFilter)
+      MovieModel.find(filter)
         .sort(sortBy)
         .limit(combinedLimit)
         .populate('languages', 'name')
         .populate('genres', 'name')
-        .lean()
+        .lean(),
     ]);
 
     // Tag items
-    const taggedMovies = rawMovies.map(m => ({ ...m, _type: 'movie' }));
     const taggedShows = rawShows.map(s => ({ ...s, _type: 'show' }));
+    const taggedMovies = rawMovies.map(m => ({ ...m, _type: 'movie' }));
 
-    const merged = [...taggedMovies, ...taggedShows];
+    const merged = [...taggedShows, ...taggedMovies];
     
     // Sort in memory based on the requested sort
     const sortField = Object.keys(sortBy)[0] || 'createdAt';
@@ -221,23 +225,40 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
       'Explore API raw fetch',
     );
 
-    // ── Deduplicate: remove items with same thumbnail OR same videoUrl ────────
+    // ── Deduplicate: remove items with same thumbnail ────────
     const seenThumbnails = new Set<string>();
-    const seenVideoUrls = new Set<string>();
     const uniqueContents: any[] = [];
 
     for (const content of rawContents) {
       const thumbnail = content.thumbnail || '';
-      const videoUrl = content.hlsUrl || '';
-
-      // Mark as seen
+      if (thumbnail && seenThumbnails.has(thumbnail)) {
+        continue;
+      }
       if (thumbnail) seenThumbnails.add(thumbnail);
-      if (videoUrl) seenVideoUrls.add(videoUrl);
-
       uniqueContents.push(content);
 
-      // Stop once we have enough unique items
       if (uniqueContents.length >= limit) break;
+    }
+
+    // ── Pre-fetch Episode 1 for TV Shows without trailers ─────────────────────
+    const { EpisodeModel } = await import('../models/Episode');
+    const showIds = uniqueContents.filter(c => c._type === 'show').map(c => c._id);
+    const episodesMap = new Map<string, any>();
+
+    if (showIds.length > 0) {
+      const firstEpisodes = await EpisodeModel.find({
+        tvShowId: { $in: showIds },
+      })
+        .sort({ season: 1, episode: 1 })
+        .select('tvShowId trailerUrl hlsUrl sourceVideoUrl isFree')
+        .lean();
+
+      for (const ep of firstEpisodes) {
+        const sId = ep.tvShowId?.toString();
+        if (sId && !episodesMap.has(sId)) {
+          episodesMap.set(sId, ep);
+        }
+      }
     }
 
     // ── Fetch like status for unique items ────────────────────────────────────
@@ -259,7 +280,21 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
       const cid = content._id.toString();
       const likeCount: number = content.likes || 0;
       const isLikedByUser: boolean = likedContentIdSet.has(cid);
-      return mapContentItem(request, content, likeCount, isLikedByUser, userPlan, content._type || 'movie');
+      const isShow = content._type === 'show';
+      const epDoc = isShow ? episodesMap.get(cid) : null;
+      const epTrailer = epDoc?.trailerUrl || null;
+      const epVideo = epDoc?.hlsUrl || epDoc?.sourceVideoUrl || null;
+
+      return mapContentItem(
+        request,
+        content,
+        likeCount,
+        isLikedByUser,
+        userPlan,
+        content._type || 'show',
+        epTrailer,
+        epVideo,
+      );
     });
 
     // nextOffset moves forward by the full raw fetch batch size (not just unique count)
