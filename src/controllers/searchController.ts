@@ -79,16 +79,7 @@ export const getRecommendations = async (
   preferredLanguage: string,
   userPlan = 'free'
 ) => {
-  let targetLanguageId: mongoose.Types.ObjectId | null = null;
-  if (preferredLanguage) {
-    const langDoc = await LanguageModel.findOne({ name: new RegExp(`^${preferredLanguage}$`, 'i') }).lean();
-    if (langDoc) {
-      targetLanguageId = langDoc._id as mongoose.Types.ObjectId;
-    }
-  }
-
   const filter: any = { status: 'published' };
-  if (targetLanguageId) filter.languages = targetLanguageId;
 
   const recShows = await TVShowModel.find(filter)
     .populate('genres', 'name')
@@ -157,14 +148,6 @@ export const getSearchPage = async (request: FastifyRequest, reply: FastifyReply
       });
     }
 
-    let targetLanguageId: mongoose.Types.ObjectId | null = null;
-    if (preferredLanguage) {
-      const langDoc = await LanguageModel.findOne({ name: new RegExp(`^${preferredLanguage}$`, 'i') }).lean();
-      if (langDoc) {
-        targetLanguageId = langDoc._id as mongoose.Types.ObjectId;
-      }
-    }
-
     // 2. Active Query State: Perform Search
     const regex = new RegExp(searchTerm, 'i');
 
@@ -184,7 +167,6 @@ export const getSearchPage = async (request: FastifyRequest, reply: FastifyReply
 
     const baseFilter = {
       status: 'published' as const,
-      ...(targetLanguageId ? { languages: targetLanguageId } : {}),
       $or: queryOptions
     };
 
