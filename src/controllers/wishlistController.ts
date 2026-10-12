@@ -20,14 +20,11 @@ export const toggleWishlist = async (request: FastifyRequest, reply: FastifyRepl
       return reply.status(400).send({ success: false, message: 'contentId is required' });
     }
 
-    if (!rawType) {
-      return reply.status(400).send({ success: false, message: 'type or contentType is required' });
-    }
-
-    const resolved = await resolveContent(contentId, rawType);
+    const resolved = await resolveContent(contentId, rawType || 'TVShow');
     if (!resolved) {
       return reply.status(404).send({ success: false, message: 'Content not found' });
     }
+    const detectedType = rawType || (resolved.type === 'TVShow' ? 'show' : 'movie');
 
     const user = (request as any).user;
     if (!user || !user.id) {
@@ -48,7 +45,7 @@ export const toggleWishlist = async (request: FastifyRequest, reply: FastifyRepl
         isWishlisted: false,
         data: {
           id: existingWishlist._id.toString(),
-          type: rawType
+          type: detectedType
         }
       });
     } else {
@@ -67,7 +64,7 @@ export const toggleWishlist = async (request: FastifyRequest, reply: FastifyRepl
         isWishlisted: true,
         data: {
           id: newWishlist._id.toString(),
-          type: rawType
+          type: detectedType
         }
       });
     }

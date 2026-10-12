@@ -239,11 +239,21 @@ export const checkDownloadEligibility = async (request: FastifyRequest, reply: F
 
     const limits = await resolveDownloadLimits(userPayload.id);
     const { resolveContent } = await import('../lib/contentResolver');
-    const resolved = await resolveContent(lookupId, q.episodeId ? 'episode' : q.contentType);
+    let resolved = await resolveContent(lookupId, q.episodeId ? 'episode' : q.contentType);
     if (!resolved || (resolved.doc.status && resolved.doc.status !== 'published')) {
       return reply.status(404).send({ success: false, message: 'Content not found' });
     }
-    const movie = resolved.doc;
+    let movie = resolved.doc;
+
+    // If a TV Show is passed directly, fall back to its first episode for offline download
+    if (resolved.type === 'TVShow') {
+      const { EpisodeModel } = await import('../models/Episode');
+      const ep = await EpisodeModel.findOne({ tvShowId: movie._id }).sort({ season: 1, episode: 1 }).lean();
+      if (ep) {
+        resolved = { type: 'Episode', model: EpisodeModel, doc: ep };
+        movie = ep;
+      }
+    }
 
     const downloadAllowed = (movie as any).downloadAllowed !== false;
     const hasFile = movieHasOfflineFile(movie);
@@ -342,11 +352,21 @@ export const requestDownload = async (request: FastifyRequest, reply: FastifyRep
     }
 
     const { resolveContent } = await import('../lib/contentResolver');
-    const resolved = await resolveContent(lookupId, body.episodeId ? 'episode' : body.contentType);
+    let resolved = await resolveContent(lookupId, body.episodeId ? 'episode' : body.contentType);
     if (!resolved || (resolved.doc.status && resolved.doc.status !== 'published')) {
       return reply.status(404).send({ success: false, message: 'Content not found' });
     }
-    const movie = resolved.doc;
+    let movie = resolved.doc;
+
+    // If a TV Show is passed directly, fall back to its first episode for offline download
+    if (resolved.type === 'TVShow') {
+      const { EpisodeModel } = await import('../models/Episode');
+      const ep = await EpisodeModel.findOne({ tvShowId: movie._id }).sort({ season: 1, episode: 1 }).lean();
+      if (ep) {
+        resolved = { type: 'Episode', model: EpisodeModel, doc: ep };
+        movie = ep;
+      }
+    }
 
     if ((movie as any).downloadAllowed === false) {
       return reply.status(400).send({
