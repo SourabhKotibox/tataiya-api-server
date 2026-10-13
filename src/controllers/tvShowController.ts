@@ -300,6 +300,11 @@ export const createTVShow = async (request: FastifyRequest, reply: FastifyReply)
       body.processingStatus = 'ready';
     }
 
+    const rawTrailer = body.trailerUrl ?? body.trailer ?? body.trailer_url ?? body.trailerFilePath;
+    if (rawTrailer !== undefined) {
+      body.trailerUrl = typeof rawTrailer === 'string' ? rawTrailer.trim() : '';
+    }
+
     const mainVideo = typeof body.hlsUrl === 'string' ? body.hlsUrl.trim() : '';
     const trailer = typeof body.trailerUrl === 'string' ? body.trailerUrl.trim() : '';
     if (mainVideo && !mainVideo.startsWith('blob:') && mainVideo !== trailer && !mainVideo.includes('.m3u8')) {
@@ -391,6 +396,14 @@ export const updateTVShow = async (request: FastifyRequest, reply: FastifyReply)
       body.processingStatus = 'ready';
     }
 
+    const rawTrailer = body.trailerUrl ?? body.trailer ?? body.trailer_url ?? body.trailerFilePath;
+    if (rawTrailer !== undefined) {
+      body.trailerUrl = typeof rawTrailer === 'string' ? rawTrailer.trim() : '';
+    } else {
+      // Don't wipe existing trailer if not submitted in body
+      delete body.trailerUrl;
+    }
+
     const mainVideo = typeof body.hlsUrl === 'string' ? body.hlsUrl.trim() : '';
     const trailer = typeof body.trailerUrl === 'string' ? body.trailerUrl.trim() : String((existingTVShow as any).trailerUrl || '');
     if (mainVideo && !mainVideo.startsWith('blob:') && mainVideo !== trailer && !mainVideo.includes('.m3u8')) {
@@ -418,6 +431,15 @@ export const updateTVShow = async (request: FastifyRequest, reply: FastifyReply)
 
     if (!tvShow) {
       return reply.status(404).send({ success: false, error: 'TVShow not found' });
+    }
+
+    if (body.trailerUrl !== undefined) {
+      try {
+        const { BannerModel } = await import('../models/Banner');
+        await BannerModel.updateMany({ contentId: id }, { $set: { trailerUrl: body.trailerUrl } });
+      } catch (bannerErr) {
+        logger.warn({ bannerErr, id }, 'Failed to sync trailerUrl to banners');
+      }
     }
 
     if (body.sections !== undefined) {

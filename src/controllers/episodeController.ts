@@ -146,6 +146,11 @@ export const createEpisode = async (request: FastifyRequest, reply: FastifyReply
   try {
     const body = request.body as any;
 
+    const rawTrailer = body.trailerUrl ?? body.trailer ?? body.trailer_url ?? body.trailerFilePath;
+    if (rawTrailer !== undefined) {
+      body.trailerUrl = typeof rawTrailer === 'string' ? rawTrailer.trim() : '';
+    }
+
     const submittedVideoUrl = String(body.sourceVideoUrl || body.videoFilePath || body.videoUrl || body.hlsUrl || '').trim();
     const isHlsPlaylist = /\.m3u8(?:[?#]|$)/i.test(submittedVideoUrl);
     const hlsUrl = String(body.hlsUrl || (body.videoUploadType === 'hls' || isHlsPlaylist ? submittedVideoUrl : '')).trim();
@@ -208,6 +213,13 @@ export const updateEpisode = async (request: FastifyRequest, reply: FastifyReply
     const existingEpisode = await EpisodeModel.findById(id).lean();
     if (!existingEpisode) {
       return reply.status(404).send({ success: false, error: 'Episode not found' });
+    }
+
+    const rawTrailer = body.trailerUrl ?? body.trailer ?? body.trailer_url ?? body.trailerFilePath;
+    if (rawTrailer !== undefined) {
+      body.trailerUrl = typeof rawTrailer === 'string' ? rawTrailer.trim() : '';
+    } else {
+      delete body.trailerUrl;
     }
 
     const hasVideoUpdate = ['sourceVideoUrl', 'videoFilePath', 'videoUrl', 'hlsUrl']

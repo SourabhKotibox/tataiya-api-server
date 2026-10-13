@@ -67,7 +67,8 @@ const mapContentItem = (
   const trailerUrl = toAbsoluteUrl(request, rawTrailer) || null;
   // If trailerUrl is still missing for TV show, fall back to episode video stream for short preview
   const effectiveTrailerUrl = trailerUrl || toAbsoluteUrl(request, rawVideo) || null;
-  const videoUrl = accessible ? (toAbsoluteUrl(request, rawVideo) || null) : null;
+  const fullVideoUrl = accessible ? (toAbsoluteUrl(request, rawVideo) || null) : null;
+  const playableUrl = effectiveTrailerUrl || fullVideoUrl || null;
 
   return {
     id: item._id.toString(),
@@ -103,8 +104,10 @@ const mapContentItem = (
     status: item.status,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
-    videoUrl,
+    videoUrl: playableUrl,
     trailerUrl: effectiveTrailerUrl,
+    streamUrl: playableUrl,
+    hlsUrl: playableUrl,
     contentPlan,
     planRequired: contentPlan,
     isLocked: locked,
@@ -236,16 +239,16 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
       'Explore API raw fetch',
     );
 
-    // ── Deduplicate: remove items with same thumbnail ────────
-    const seenThumbnails = new Set<string>();
+    // ── Deduplicate: remove items with same content ID ────────
+    const seenContentIds = new Set<string>();
     const uniqueContents: any[] = [];
 
     for (const content of rawContents) {
-      const thumbnail = content.thumbnail || '';
-      if (thumbnail && seenThumbnails.has(thumbnail)) {
+      const cid = content._id ? content._id.toString() : '';
+      if (cid && seenContentIds.has(cid)) {
         continue;
       }
-      if (thumbnail) seenThumbnails.add(thumbnail);
+      if (cid) seenContentIds.add(cid);
       uniqueContents.push(content);
 
       if (uniqueContents.length >= limit) break;

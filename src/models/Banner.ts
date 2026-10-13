@@ -6,11 +6,13 @@ export interface IBanner extends Document {
   description?: string;
   imageUrl: string;
   mobileImageUrl?: string;
+  trailerUrl?: string;
+  videoUrl?: string;
   ctaText: string;
   ctaLink?: string;
   contentId?: Types.ObjectId;
   type: 'hero' | 'featured' | 'promotional' | 'category';
-  contentType: 'movie';
+  contentType: 'movie' | 'tvShow' | 'show' | 'series' | 'custom';
   position: number;
   isActive: boolean;
   targetPlatforms: Array<'web' | 'mobile' | 'tv'>;
@@ -31,6 +33,8 @@ const BannerSchema = new Schema<IBanner>(
     description: String,
     imageUrl: { type: String, required: true },
     mobileImageUrl: String,
+    trailerUrl: String,
+    videoUrl: String,
     ctaText: { type: String, default: 'Watch Now' },
     ctaLink: String,
     contentId: { type: Schema.Types.ObjectId, ref: 'Content' },
@@ -41,8 +45,8 @@ const BannerSchema = new Schema<IBanner>(
     },
     contentType: {
       type: String,
-      enum: ['movie'],
-      default: 'movie',
+      enum: ['movie', 'tvShow', 'show', 'series', 'custom'],
+      default: 'tvShow',
     },
     position: { type: Number, default: 0 },
     isActive: { type: Boolean, default: true, index: true },

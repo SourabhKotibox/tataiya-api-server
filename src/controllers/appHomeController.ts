@@ -90,46 +90,52 @@ const mapContentItem = (
   const contentType = isShow ? 'tvShow' : 'movie';
   const contentPlanRaw = item.planRequired || item.plan || 'free';
   const isLocked = normalizePlanKey(userPlan) === 'free';
+  const trailerUrl = resolveUrl(item.trailerUrl || null);
+  const videoUrl = resolveUrl(item.hlsUrl || item.videoUrl || null);
+  const streamUrl = trailerUrl || videoUrl;
+
   return {
-  id: item._id.toString(),
-  title: item.title,
-  description: item.description,
-  shortDescription: item.shortDescription,
-  thumbnail: resolveUrl(item.thumbnail),
-  bannerImage: resolveUrl(item.bannerImage),
-  posterImage: resolveUrl(item.posterImage),
-  type: contentType,
-  contentType,
-  totalSeasons: item.totalSeasons || null,
-  genres: (item.genres || []).map((g: any) => g.name || g),
-  genresText: (item.genres || []).map((g: any) => g.name || g).join(' & '),
-  languages: (item.languages || []).map((l: any) => l.name || l),
-  views: item.views || 0,
-  likeCount,
-  isLikedByUser,
-  isLiked: isLikedByUser,
-  liked: isLikedByUser,
-  isWishlisted,
-  wishlisted: isWishlisted,
-  isWishlist: isWishlisted,
-  inWishlist: isWishlisted,
-  is_wishlist: isWishlisted,
-  is_wishlisted: isWishlisted,
-  shares: item.shares || 0,
-  shareUrl: buildShareUrl(item._id.toString(), isShow ? 'show' : 'movie'),
-  featured: item.featured,
-  trending: item.trending,
-  isNewContent: item.isNewContent,
-  rating: item.rating,
-  year: item.year,
-  duration: item.duration,
-  status: item.status,
-  createdAt: item.createdAt,
-  updatedAt: item.updatedAt,
-  videoUrl: resolveUrl(item.hlsUrl || null),
-  trailerUrl: resolveUrl(item.trailerUrl || null),
-  contentPlan: normalizePlanKey(contentPlanRaw) === 'free' ? 'standard' : contentPlanRaw,
-  isLocked,
+    id: item._id.toString(),
+    title: item.title,
+    description: item.description,
+    shortDescription: item.shortDescription,
+    thumbnail: resolveUrl(item.thumbnail),
+    bannerImage: resolveUrl(item.bannerImage),
+    posterImage: resolveUrl(item.posterImage),
+    type: contentType,
+    contentType,
+    totalSeasons: item.totalSeasons || null,
+    genres: (item.genres || []).map((g: any) => g.name || g),
+    genresText: (item.genres || []).map((g: any) => g.name || g).join(' & '),
+    languages: (item.languages || []).map((l: any) => l.name || l),
+    views: item.views || 0,
+    likeCount,
+    isLikedByUser,
+    isLiked: isLikedByUser,
+    liked: isLikedByUser,
+    isWishlisted,
+    wishlisted: isWishlisted,
+    isWishlist: isWishlisted,
+    inWishlist: isWishlisted,
+    is_wishlist: isWishlisted,
+    is_wishlisted: isWishlisted,
+    shares: item.shares || 0,
+    shareUrl: buildShareUrl(item._id.toString(), isShow ? 'show' : 'movie'),
+    featured: item.featured,
+    trending: item.trending,
+    isNewContent: item.isNewContent,
+    rating: item.rating,
+    year: item.year,
+    duration: item.duration,
+    status: item.status,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    videoUrl,
+    trailerUrl,
+    streamUrl,
+    hlsUrl: videoUrl || trailerUrl,
+    contentPlan: normalizePlanKey(contentPlanRaw) === 'free' ? 'standard' : contentPlanRaw,
+    isLocked,
   };
 };
 
@@ -150,9 +156,37 @@ const populateBannersContent = async (banners: any[]) => {
     contentMap.set(show._id.toString(), { ...show, type: 'tvShow', contentType: 'tvShow' });
   }
 
+  // Pre-fetch Episode 1 trailer for any TV shows missing trailerUrl
+  const showsNeedingTrailer = shows.filter((s) => !s.trailerUrl).map((s) => s._id);
+  if (showsNeedingTrailer.length > 0) {
+    try {
+      const { EpisodeModel } = await import('../models/Episode');
+      const firstEpisodes = await EpisodeModel.find({ tvShowId: { $in: showsNeedingTrailer } })
+        .sort({ season: 1, episode: 1 })
+        .select('tvShowId trailerUrl hlsUrl sourceVideoUrl')
+        .lean();
+      for (const ep of firstEpisodes) {
+        const sId = ep.tvShowId?.toString();
+        if (sId && contentMap.has(sId)) {
+          const show = contentMap.get(sId);
+          if (!show.trailerUrl) {
+            show.trailerUrl = ep.trailerUrl || ep.hlsUrl || ep.sourceVideoUrl;
+          }
+        }
+      }
+    } catch (e) {
+      logger.error({ e }, 'Error fetching episode trailer for app banners');
+    }
+  }
+
   for (const banner of banners) {
     if (banner.contentId) {
-      banner.contentId = contentMap.get(banner.contentId.toString()) || null;
+      const c = contentMap.get(banner.contentId.toString()) || null;
+      banner.contentId = c;
+      if (c) {
+        if (!banner.trailerUrl) banner.trailerUrl = c.trailerUrl;
+        if (!banner.videoUrl) banner.videoUrl = c.hlsUrl || c.videoUrl;
+      }
     }
   }
 
@@ -170,6 +204,10 @@ const mapBanner = (
 ) => {
   const content = banner.contentId;
   const thumbnail = resolveUrl(content?.thumbnail || banner.imageUrl);
+  const trailerUrl = resolveUrl(banner.trailerUrl || content?.trailerUrl || null);
+  const videoUrl = resolveUrl(banner.videoUrl || content?.hlsUrl || content?.videoUrl || null);
+  const streamUrl = trailerUrl || videoUrl;
+
   return {
     id: banner._id.toString(),
     title: banner.title,
@@ -178,12 +216,16 @@ const mapBanner = (
     thumbnail,
     imageUrl: resolveUrl(banner.imageUrl),
     mobileImageUrl: resolveUrl(banner.mobileImageUrl),
+    trailerUrl,
+    videoUrl: trailerUrl || videoUrl,
+    streamUrl,
+    hlsUrl: trailerUrl || videoUrl,
     ctaText: banner.ctaText,
     ctaLink: banner.ctaLink,
     contentId: banner.contentId?._id?.toString(),
     content: content ? mapContentItem(content, resolveUrl, likeCount, isLikedByUser, userPlan, isWishlisted) : undefined,
-    type: banner.type,
-    contentType: banner.contentType,
+    type: banner.type || 'hero',
+    contentType: banner.contentType || content?.contentType || 'tvShow',
     position: banner.position,
     isActive: banner.isActive,
     targetPlatforms: banner.targetPlatforms || [],
@@ -499,7 +541,12 @@ export const getAppBanners = async (request: FastifyRequest, reply: FastifyReply
 
     const bannersRaw = await BannerModel.find({
       isActive: true,
-      targetPlatforms: platform,
+      $or: [
+        { targetPlatforms: platform },
+        { targetPlatforms: { $exists: false } },
+        { targetPlatforms: { $size: 0 } },
+        { targetPlatforms: null },
+      ],
       $and: [
         { $or: [{ startDate: { $exists: false } }, { startDate: { $lte: now } }] },
         { $or: [{ endDate: { $exists: false } }, { endDate: { $gte: now } }] },

@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { BannerModel } from '../models/Banner';
 import { MovieModel } from '../models/Movie';
+import { TVShowModel } from '../models/TVShow';
 import uploadHandler from '../lib/uploadHandler';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -80,42 +81,86 @@ const ensureDefaultBannerImage = () => {
   return `/uploads/banners/${fileName}`;
 };
 
-const mapContent = (content: any) => ({
-  id: content._id.toString(),
-  title: content.title,
-  subtitle: content.shortDescription,
-  description: content.description,
-  thumbnail: content.thumbnail,
-  bannerImage: content.bannerImage,
-  genres: content.genres,
-  languages: content.languages,
-  views: content.views,
-  likes: content.likes,
-  shares: content.shares,
-  status: content.status,
-  createdAt: content.createdAt,
-  updatedAt: content.updatedAt,
-  contentType: 'movie',
-  hlsUrl: content.hlsUrl,
-  videoUrl: content.videoUrl,
-});
+const mapContent = (content: any) => {
+  const isShow = content.contentType === 'tvShow' || content.type === 'tvShow' || !!content.totalSeasons;
+  const contentType = isShow ? 'tvShow' : 'movie';
+  const trailerUrl = content.trailerUrl || null;
+  const videoUrl = content.videoUrl || content.hlsUrl || null;
+  return {
+    id: content._id.toString(),
+    title: content.title,
+    subtitle: content.shortDescription,
+    description: content.description,
+    thumbnail: content.thumbnail,
+    bannerImage: content.bannerImage,
+    posterImage: content.posterImage,
+    genres: content.genres,
+    languages: content.languages,
+    views: content.views,
+    likes: content.likes,
+    shares: content.shares,
+    status: content.status,
+    createdAt: content.createdAt,
+    updatedAt: content.updatedAt,
+    contentType,
+    type: contentType,
+    hlsUrl: videoUrl || trailerUrl,
+    videoUrl,
+    trailerUrl,
+    streamUrl: trailerUrl || videoUrl,
+  };
+};
 
 const populateBannersContent = async (banners: any[]) => {
   const contentIds = banners.map((b) => b.contentId).filter(Boolean);
   if (contentIds.length === 0) return banners;
 
-  const movies = await MovieModel.find({ _id: { $in: contentIds } }).lean();
+  const [movies, shows] = await Promise.all([
+    MovieModel.find({ _id: { $in: contentIds } }).lean(),
+    TVShowModel.find({ _id: { $in: contentIds } }).lean(),
+  ]);
 
   // Create a map for quick lookups
   const contentMap = new Map();
   for (const movie of movies) {
     contentMap.set(movie._id.toString(), { ...movie, contentType: 'movie' });
   }
+  for (const show of shows) {
+    contentMap.set(show._id.toString(), { ...show, contentType: 'tvShow' });
+  }
+
+  // Pre-fetch Episode 1 trailer for any TV shows missing trailerUrl
+  const showsNeedingTrailer = shows.filter((s) => !s.trailerUrl).map((s) => s._id);
+  if (showsNeedingTrailer.length > 0) {
+    try {
+      const { EpisodeModel } = await import('../models/Episode');
+      const firstEpisodes = await EpisodeModel.find({ tvShowId: { $in: showsNeedingTrailer } })
+        .sort({ season: 1, episode: 1 })
+        .select('tvShowId trailerUrl hlsUrl sourceVideoUrl')
+        .lean();
+      for (const ep of firstEpisodes) {
+        const sId = ep.tvShowId?.toString();
+        if (sId && contentMap.has(sId)) {
+          const show = contentMap.get(sId);
+          if (!show.trailerUrl) {
+            show.trailerUrl = ep.trailerUrl || ep.hlsUrl || ep.sourceVideoUrl;
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Error fetching episode trailer for banners:', e);
+    }
+  }
 
   // Assign populated content back to banner
   for (const banner of banners) {
     if (banner.contentId) {
-      banner.contentId = contentMap.get(banner.contentId.toString()) || null;
+      const c = contentMap.get(banner.contentId.toString()) || null;
+      banner.contentId = c;
+      if (c) {
+        if (!banner.trailerUrl) banner.trailerUrl = c.trailerUrl;
+        if (!banner.videoUrl) banner.videoUrl = c.hlsUrl || c.videoUrl;
+      }
     }
   }
 
@@ -147,6 +192,8 @@ const resequenceBanners = async (movedBannerId?: string, targetPosition?: number
 const mapBanner = (banner: any) => {
   const content = banner.contentId;
   const thumbnail = content?.thumbnail || banner.imageUrl;
+  const trailerUrl = banner.trailerUrl || content?.trailerUrl || null;
+  const videoUrl = banner.videoUrl || content?.hlsUrl || content?.videoUrl || null;
   return {
     id: banner._id.toString(),
     title: banner.title,
@@ -154,11 +201,16 @@ const mapBanner = (banner: any) => {
     description: banner.description,
     thumbnail,
     imageUrl: thumbnail,
+    trailerUrl,
+    videoUrl: trailerUrl || videoUrl,
+    streamUrl: trailerUrl || videoUrl,
+    hlsUrl: trailerUrl || videoUrl,
     ctaText: banner.ctaText,
     ctaLink: banner.ctaLink,
     position: banner.position,
     isActive: banner.isActive,
-    type: banner.type,
+    type: banner.type || 'hero',
+    contentType: banner.contentType || content?.contentType || 'tvShow',
     targetPlatforms: banner.targetPlatforms || [],
     startDate: banner.startDate,
     endDate: banner.endDate,
@@ -256,7 +308,7 @@ export const createBannerFromContent = async (request: FastifyRequest, reply: Fa
   try {
     const body = request.body as {
       contentId: string;
-      contentSource?: 'movie';
+      contentSource?: 'movie' | 'tvShow' | 'show' | 'series' | string;
       title?: string;
       subtitle?: string;
       description?: string;
@@ -264,59 +316,117 @@ export const createBannerFromContent = async (request: FastifyRequest, reply: Fa
       ctaLink?: string;
       position?: number;
       isActive?: boolean;
+      imageUrl?: string;
+      thumbnail?: string;
     };
 
     if (!body.contentId) {
       return reply.status(400).send({ success: false, message: 'contentId is required' });
     }
 
-    // Fetch the source movie
-    const source: any = await MovieModel.findById(body.contentId).lean();
+    // Fetch the source content (support TV shows and Movies)
+    let source: any = null;
+    let contentType: 'tvShow' | 'movie' = 'tvShow';
+
+    if (body.contentSource === 'movie') {
+      source = await MovieModel.findById(body.contentId).lean();
+      contentType = 'movie';
+      if (!source) {
+        source = await TVShowModel.findById(body.contentId).lean();
+        if (source) contentType = 'tvShow';
+      }
+    } else {
+      source = await TVShowModel.findById(body.contentId).lean();
+      contentType = 'tvShow';
+      if (!source) {
+        source = await MovieModel.findById(body.contentId).lean();
+        if (source) contentType = 'movie';
+      }
+    }
 
     if (!source) {
       return reply.status(404).send({ success: false, message: 'Source content not found' });
     }
 
+    // If source TV show has no trailerUrl, lookup Episode 1 trailer
+    let resolvedTrailerUrl = source.trailerUrl;
+    if (!resolvedTrailerUrl && contentType === 'tvShow') {
+      try {
+        const { EpisodeModel } = await import('../models/Episode');
+        const ep1 = await EpisodeModel.findOne({ tvShowId: source._id })
+          .sort({ season: 1, episode: 1 })
+          .select('trailerUrl hlsUrl sourceVideoUrl')
+          .lean();
+        if (ep1) {
+          resolvedTrailerUrl = ep1.trailerUrl || ep1.hlsUrl || ep1.sourceVideoUrl;
+        }
+      } catch {}
+    }
+
+    const thumbnail =
+      body.imageUrl ||
+      body.thumbnail ||
+      source.thumbnail ||
+      source.bannerImage ||
+      source.imageUrl ||
+      ensureDefaultBannerImage();
+    const title = body.title || source.title;
+    const videoUrl = source.hlsUrl || source.videoUrl || undefined;
+
     // Check if a banner already exists for this content
     const existing = await BannerModel.findOne({ contentId: body.contentId });
     if (existing) {
-      return reply.status(409).send({
-        success: false,
-        message: 'A banner for this content already exists. Please edit the existing banner instead.',
+      existing.title = title;
+      existing.subtitle = body.subtitle || source.shortDescription || existing.subtitle || '';
+      existing.description = body.description || source.description || existing.description || '';
+      existing.imageUrl = thumbnail;
+      existing.trailerUrl = resolvedTrailerUrl || existing.trailerUrl;
+      existing.videoUrl = videoUrl || existing.videoUrl;
+      existing.ctaText = body.ctaText || existing.ctaText || 'Watch Now';
+      existing.ctaLink = body.ctaLink || existing.ctaLink || '';
+      existing.isActive = body.isActive ?? true;
+      existing.contentType = contentType;
+      existing.targetPlatforms = ['web', 'mobile', 'tv'];
+      if (Number.isFinite(body.position)) existing.position = body.position!;
+      await existing.save();
+
+      await resequenceBanners(existing._id.toString(), existing.position);
+
+      const bannerRaw = await BannerModel.findById(existing._id).lean();
+      const populated = await populateBannersContent([bannerRaw]);
+
+      return reply.status(200).send({
+        success: true,
+        data: mapBanner(populated[0]),
+        message: 'Banner updated successfully from content.',
       });
     }
-
-    const thumbnail = source.thumbnail || source.bannerImage || source.imageUrl || ensureDefaultBannerImage();
-    const title = body.title || source.title;
 
     const banner = await BannerModel.create({
       title,
       subtitle: body.subtitle || source.shortDescription || '',
       description: body.description || source.description || '',
       imageUrl: thumbnail,
+      trailerUrl: resolvedTrailerUrl || undefined,
+      videoUrl,
       ctaText: body.ctaText || 'Watch Now',
       ctaLink: body.ctaLink || '',
       contentId: body.contentId,
       type: 'hero',
+      contentType,
       position: Number.isFinite(body.position) ? body.position : 0,
       isActive: body.isActive ?? true,
-      targetPlatforms: ['web', 'mobile'],
+      targetPlatforms: ['web', 'mobile', 'tv'],
     });
 
     await resequenceBanners(banner._id.toString(), banner.position);
 
+    const bannerRaw = await BannerModel.findById(banner._id).lean();
+    const populated = await populateBannersContent([bannerRaw]);
+
     return reply.status(201).send({
       success: true,
-      data: {
-        id: banner._id,
-        title: banner.title,
-        subtitle: banner.subtitle,
-        description: banner.description,
-        imageUrl: banner.imageUrl,
-        position: banner.position,
-        isActive: banner.isActive,
-        contentId: banner.contentId,
-      },
+      data: mapBanner(populated[0]),
       message: 'Banner created successfully from existing content.',
     });
   } catch (error: any) {
@@ -336,11 +446,35 @@ export const createBanner = async (request: FastifyRequest, reply: FastifyReply)
       });
     }
 
-    // If a movie is linked, make sure it exists
+    // If content is linked, verify it exists (TV show or Movie)
+    let linkedTrailerUrl: string | undefined;
+    let linkedVideoUrl: string | undefined;
+    let linkedContentType: 'tvShow' | 'movie' = 'tvShow';
+
     if (data.contentId) {
-      const movie = await MovieModel.findById(data.contentId).lean();
-      if (!movie) {
-        return reply.status(404).send({ success: false, message: 'Linked movie not found' });
+      const show = await TVShowModel.findById(data.contentId).lean();
+      if (show) {
+        linkedContentType = 'tvShow';
+        linkedTrailerUrl = show.trailerUrl;
+        linkedVideoUrl = show.hlsUrl || show.videoUrl;
+        if (!linkedTrailerUrl) {
+          try {
+            const { EpisodeModel } = await import('../models/Episode');
+            const ep1 = await EpisodeModel.findOne({ tvShowId: show._id })
+              .sort({ season: 1, episode: 1 })
+              .select('trailerUrl hlsUrl sourceVideoUrl')
+              .lean();
+            if (ep1) linkedTrailerUrl = ep1.trailerUrl || ep1.hlsUrl || ep1.sourceVideoUrl;
+          } catch {}
+        }
+      } else {
+        const movie = await MovieModel.findById(data.contentId).lean();
+        if (!movie) {
+          return reply.status(404).send({ success: false, message: 'Linked content not found' });
+        }
+        linkedContentType = 'movie';
+        linkedTrailerUrl = movie.trailerUrl;
+        linkedVideoUrl = movie.videoUrl || movie.hlsUrl;
       }
     }
 
@@ -351,13 +485,16 @@ export const createBanner = async (request: FastifyRequest, reply: FastifyReply)
       subtitle: data.subtitle,
       description: data.description,
       imageUrl: thumbnail,
+      trailerUrl: linkedTrailerUrl,
+      videoUrl: linkedVideoUrl,
       ctaText: data.ctaText || 'Watch Now',
       ctaLink: data.ctaLink,
       contentId: data.contentId || undefined,
       type: 'hero',
+      contentType: linkedContentType,
       position: Number.isFinite(data.position) ? data.position : 0,
       isActive: data.isActive ?? true,
-      targetPlatforms: data.targetPlatforms?.length ? data.targetPlatforms : ['web', 'mobile'],
+      targetPlatforms: data.targetPlatforms?.length ? data.targetPlatforms : ['web', 'mobile', 'tv'],
       startDate: data.startDate,
       endDate: data.endDate,
     });
@@ -410,7 +547,8 @@ export const updateBanner = async (request: FastifyRequest, reply: FastifyReply)
     }
 
     const existingContent = existingBanner.contentId
-      ? await MovieModel.findById(existingBanner.contentId).lean()
+      ? (await TVShowModel.findById(existingBanner.contentId).lean()) ||
+        (await MovieModel.findById(existingBanner.contentId).lean())
       : null;
     const data = await readBannerMultipart(request);
     const updateData: Record<string, any> = {};
@@ -448,7 +586,10 @@ export const updateBanner = async (request: FastifyRequest, reply: FastifyReply)
       if (data.languages?.length) contentUpdate.languages = data.languages;
 
       if (Object.keys(contentUpdate).length > 0) {
-        await MovieModel.findByIdAndUpdate(existingBanner.contentId, { $set: contentUpdate });
+        await Promise.all([
+          MovieModel.findByIdAndUpdate(existingBanner.contentId, { $set: contentUpdate }),
+          TVShowModel.findByIdAndUpdate(existingBanner.contentId, { $set: contentUpdate }),
+        ]);
       }
     }
 
