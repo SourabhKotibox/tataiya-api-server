@@ -75,7 +75,7 @@ export const getSeriesDetail = async (request: FastifyRequest, reply: FastifyRep
       .populate('languages', 'name')
       .lean();
 
-    if (!series || series.status !== 'published') {
+    if (!series || series.status === 'rejected') {
       return reply.status(404).send({ success: false, message: 'Series not found.' });
     }
 
@@ -155,9 +155,15 @@ export const getSeriesDetail = async (request: FastifyRequest, reply: FastifyRep
     const genreNames = (series.genres as any[]).map((g: any) => g?.name || g);
     const languageNames = (series.languages as any[]).map((l: any) => l?.name || l);
 
-    // Fetch Episodes
+    const seriesObjectId = series._id;
+    const seriesIdStr = series._id.toString();
+
+    // Fetch Episodes matching either ObjectId or string
     const allEpisodes = await EpisodeModel.find({
-      tvShowId: series._id,
+      $or: [
+        { tvShowId: seriesObjectId },
+        { tvShowId: seriesIdStr },
+      ],
     }).sort({ season: 1, episode: 1 }).lean();
 
     const seasonsMap = new Map<number, any[]>();
@@ -174,7 +180,7 @@ export const getSeriesDetail = async (request: FastifyRequest, reply: FastifyRep
       const playableUrl = ep.hlsUrl || (
         sourceVideoUrl && (sourceIsPlaylist || /^https?:\/\//i.test(sourceVideoUrl))
           ? sourceVideoUrl
-          : null
+          : ep.videoUrl || ep.sourceVideoUrl || null
       );
       
       seasonsMap.get(ep.season)!.push({
@@ -195,7 +201,24 @@ export const getSeriesDetail = async (request: FastifyRequest, reply: FastifyRep
       });
     }
 
-    const seasons = Array.from(seasonsMap.keys()).map(s => ({
+    // Include seasons from SeasonModel if defined
+    try {
+      const { SeasonModel } = await import('../models/Season');
+      const dbSeasons = await SeasonModel.find({
+        $or: [
+          { tvShowId: seriesObjectId },
+          { tvShowId: seriesIdStr },
+        ],
+      }).sort({ seasonNumber: 1 }).lean();
+
+      for (const dbs of dbSeasons) {
+        if (!seasonsMap.has(dbs.seasonNumber)) {
+          seasonsMap.set(dbs.seasonNumber, []);
+        }
+      }
+    } catch {}
+
+    const seasons = Array.from(seasonsMap.keys()).sort((a, b) => a - b).map(s => ({
       seasonNumber: s,
       episodes: seasonsMap.get(s),
     }));
