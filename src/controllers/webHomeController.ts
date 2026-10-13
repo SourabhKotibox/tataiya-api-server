@@ -84,7 +84,8 @@ const mapContentItem = (item: any, _isHero = false) => {
     id,
     _id: id,
     title: item.title,
-    poster: resolveMediaUrl(item.posterImage || item.thumbnail || ''),
+    thumbnail: resolveMediaUrl(item.thumbnail || ''),
+    poster: resolveMediaUrl(item.posterImage || ''),
     posterImage: resolveMediaUrl(item.posterImage || ''),
     backdrop: resolveMediaUrl(item.bannerImage || item.thumbnail || ''),
     bannerImage: resolveMediaUrl(item.bannerImage || ''),
@@ -196,7 +197,7 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
             const locked = isContentLocked(planRequired, 'free');
             const isShow = content.contentType === 'tvShow';
             const ep = isShow ? showEpisodeMap.get(content._id.toString()) : null;
-            const showTrailer = banner.trailerUrl || content.trailerUrl || ep?.trailerUrl || null;
+            const showTrailer = content.trailerUrl || banner.trailerUrl || banner.videoUrl || ep?.trailerUrl || null;
             const epVideo = ep?.hlsUrl || ep?.videoUrl || ep?.sourceVideoUrl || null;
             const contentVideo = content.hlsUrl || content.videoUrl || content.sourceVideoUrl || null;
             const playableStream = epVideo || contentVideo || null;

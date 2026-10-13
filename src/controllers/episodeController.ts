@@ -564,16 +564,15 @@ export const reprocessEpisodeHls = async (request: any, reply: any) => {
 
 /**
  * POST /admin/episodes/backfill-durations
- * Scans all episodes with missing or zero duration and probes duration from
- * the source video using ffprobe — without triggering a full re-transcode.
- * Episodes that already have a non-zero duration are skipped.
+ * Scans episodes with missing duration or the legacy 45-minute default and
+ * probes the source video using ffprobe without triggering a full re-transcode.
  */
 export const backfillEpisodeDurations = async (request: any, reply: any) => {
   try {
     // Find episodes with missing/zero duration that have a usable source
     const episodes = await EpisodeModel.find({
       $and: [
-        { $or: [{ duration: { $exists: false } }, { duration: 0 }, { duration: null }] },
+        { $or: [{ duration: { $exists: false } }, { duration: { $in: [0, null, 2700] } }] },
         {
           $or: [
             { sourceVideoUrl: { $exists: true, $nin: [null, ''] } },

@@ -591,10 +591,10 @@ export const processEpisodeHls = async (episodeId: Types.ObjectId | string, sour
       processingError:  null,
     };
 
-    // Auto-save detected duration (only update if not already set by admin)
+    // Replace missing or legacy-default durations with the probed source duration.
     if (result.detectedDurationSeconds && result.detectedDurationSeconds > 0) {
       const existing = await EpisodeModel.findById(episodeId).select('duration').lean();
-      if (!existing?.duration || existing.duration === 0) {
+      if (!existing?.duration || existing.duration === 0 || existing.duration === 2700) {
         episodeUpdate.duration = result.detectedDurationSeconds;
         logger.info(
           { episodeId, detectedDurationSeconds: result.detectedDurationSeconds },
