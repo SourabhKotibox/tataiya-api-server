@@ -389,7 +389,7 @@ const transcodeHlsSequential = async (opts: {
     }
 
     const folderSize = getFolderSize(qFolder);
-    q.folderSize = folderSize; // attach size for later
+    (q as any).folderSize = folderSize; // attach size for later
 
     if (s3Active && s3Prefix) {
       const { uploadHlsFolderToS3 } = require('../lib/s3');

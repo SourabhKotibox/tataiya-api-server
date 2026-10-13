@@ -2,11 +2,13 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import mongoose from 'mongoose';
 import { BannerModel } from '../models/Banner';
 import { MovieModel } from '../models/Movie';
 import { TVShowModel } from '../models/TVShow';
 import uploadHandler from '../lib/uploadHandler';
 import { calculateEpisodeStartSeconds } from '../lib/videoPreview';
+import { toAbsoluteUrl, resolveVideoStream, findDiskHlsMaster } from '../lib/urlHelper';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -82,20 +84,26 @@ const ensureDefaultBannerImage = () => {
   return `/uploads/banners/${fileName}`;
 };
 
-const mapContent = (content: any) => {
+const mapContent = (content: any, request?: FastifyRequest | null) => {
   const isShow = content.contentType === 'tvShow' || content.type === 'tvShow' || !!content.totalSeasons;
   const contentType = isShow ? 'tvShow' : 'movie';
-  const trailerUrl = content.trailerUrl || null;
-  const videoUrl = content.videoUrl || content.hlsUrl || null;
+  const folderType = isShow ? 'episodes' : 'movies';
+
+  const videoStream = resolveVideoStream(content, request, folderType);
+  const trailerUrl = toAbsoluteUrl(request, content.trailerUrl) || null;
   const startSeconds = content.startSeconds || 0;
+
+  const streamUrl = trailerUrl || videoStream.streamUrl;
+  const hlsUrl = videoStream.hlsUrl || trailerUrl || videoStream.streamUrl;
+
   return {
     id: content._id.toString(),
     title: content.title,
     subtitle: content.shortDescription,
     description: content.description,
-    thumbnail: content.thumbnail,
-    bannerImage: content.bannerImage,
-    posterImage: content.posterImage,
+    thumbnail: toAbsoluteUrl(request, content.thumbnail),
+    bannerImage: toAbsoluteUrl(request, content.bannerImage),
+    posterImage: toAbsoluteUrl(request, content.posterImage),
     genres: content.genres,
     languages: content.languages,
     views: content.views,
@@ -106,10 +114,11 @@ const mapContent = (content: any) => {
     updatedAt: content.updatedAt,
     contentType,
     type: contentType,
-    hlsUrl: videoUrl || trailerUrl,
-    videoUrl,
-    trailerUrl,
-    streamUrl: trailerUrl || videoUrl,
+    hlsUrl,
+    videoUrl: streamUrl,
+    trailerUrl: trailerUrl || streamUrl,
+    streamUrl,
+    videoQualities: videoStream.videoQualities,
     startSeconds,
     startAt: startSeconds,
     startTime: startSeconds,
@@ -121,7 +130,7 @@ const mapContent = (content: any) => {
   };
 };
 
-const populateBannersContent = async (banners: any[]) => {
+const populateBannersContent = async (banners: any[], request?: FastifyRequest | null) => {
   const contentIds = banners.map((b) => b.contentId).filter(Boolean);
   if (contentIds.length === 0) return banners;
 
@@ -146,7 +155,7 @@ const populateBannersContent = async (banners: any[]) => {
       const { EpisodeModel } = await import('../models/Episode');
       const firstEpisodes = await EpisodeModel.find({ tvShowId: { $in: showIds } })
         .sort({ season: 1, episode: 1 })
-        .select('tvShowId trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds')
+        .select('tvShowId trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds videoQualities')
         .lean();
       for (const ep of firstEpisodes) {
         const sId = ep.tvShowId?.toString();
@@ -154,7 +163,8 @@ const populateBannersContent = async (banners: any[]) => {
           const show = contentMap.get(sId);
           const hasShowTrailer = !!show.trailerUrl;
           const hasEpTrailer = !!ep.trailerUrl;
-          const epVideo = ep.hlsUrl || ep.sourceVideoUrl || ep.videoUrl;
+          const epStream = resolveVideoStream(ep, request, 'episodes');
+          const epVideo = epStream.hlsUrl || epStream.streamUrl || ep.hlsUrl || ep.sourceVideoUrl || ep.videoUrl;
           const epDuration = ep.duration;
           const epStart = ep.sourceStartSeconds || calculateEpisodeStartSeconds(epDuration);
 
@@ -165,14 +175,16 @@ const populateBannersContent = async (banners: any[]) => {
             } else if (epVideo) {
               show.trailerUrl = epVideo;
               show.videoUrl = epVideo;
-              show.hlsUrl = epVideo;
+              show.hlsUrl = epStream.hlsUrl || epVideo;
               show.startSeconds = epStart;
               show.isEpisodePreview = true;
+              show.videoQualities = epStream.videoQualities;
             }
           }
           if (!show.videoUrl && epVideo) {
             show.videoUrl = epVideo;
-            show.hlsUrl = epVideo;
+            show.hlsUrl = epStream.hlsUrl || epVideo;
+            if (!show.videoQualities?.length) show.videoQualities = epStream.videoQualities;
           }
         }
       }
@@ -189,10 +201,14 @@ const populateBannersContent = async (banners: any[]) => {
       if (c) {
         if (!banner.trailerUrl) banner.trailerUrl = c.trailerUrl;
         if (!banner.videoUrl) banner.videoUrl = c.videoUrl || c.hlsUrl;
+        if (!banner.hlsUrl) banner.hlsUrl = c.hlsUrl || c.videoUrl;
         if (c.startSeconds !== undefined && (!banner.startSeconds || banner.startSeconds === 0)) {
           banner.startSeconds = c.startSeconds;
         }
         if (c.isEpisodePreview) banner.isEpisodePreview = true;
+        if (c.videoQualities?.length && !banner.videoQualities?.length) {
+          banner.videoQualities = c.videoQualities;
+        }
       }
     }
   }
@@ -222,12 +238,21 @@ const resequenceBanners = async (movedBannerId?: string, targetPosition?: number
   }
 };
 
-const mapBanner = (banner: any) => {
+const mapBanner = (banner: any, request?: FastifyRequest | null) => {
   const content = banner.contentId;
-  const thumbnail = content?.thumbnail || banner.imageUrl;
-  const trailerUrl = banner.trailerUrl || content?.trailerUrl || null;
-  const videoUrl = banner.videoUrl || content?.hlsUrl || content?.videoUrl || null;
+  const thumbnail = toAbsoluteUrl(request, banner.imageUrl || content?.thumbnail || banner.thumbnail);
   const startSeconds = banner.startSeconds || content?.startSeconds || 0;
+  const isShow = banner.contentType === 'tvShow' || content?.contentType === 'tvShow' || content?.type === 'tvShow' || !!content?.totalSeasons;
+  const folderType = isShow ? 'episodes' : 'movies';
+
+  const contentStream = resolveVideoStream(content, request, folderType);
+  const bannerStream = resolveVideoStream(banner, request, folderType);
+
+  const trailerUrl = toAbsoluteUrl(request, banner.trailerUrl || content?.trailerUrl) || null;
+  const streamUrl = trailerUrl || bannerStream.streamUrl || contentStream.streamUrl;
+  const hlsUrl = bannerStream.hlsUrl || contentStream.hlsUrl || streamUrl;
+  const videoQualities = (bannerStream.videoQualities?.length ? bannerStream.videoQualities : contentStream.videoQualities) || [];
+
   return {
     id: banner._id.toString(),
     title: banner.title,
@@ -235,10 +260,12 @@ const mapBanner = (banner: any) => {
     description: banner.description,
     thumbnail,
     imageUrl: thumbnail,
-    trailerUrl,
-    videoUrl: trailerUrl || videoUrl,
-    streamUrl: trailerUrl || videoUrl,
-    hlsUrl: trailerUrl || videoUrl,
+    mobileImageUrl: toAbsoluteUrl(request, banner.mobileImageUrl || banner.imageUrl || content?.thumbnail),
+    trailerUrl: trailerUrl || streamUrl,
+    videoUrl: streamUrl,
+    streamUrl,
+    hlsUrl,
+    videoQualities,
     startSeconds,
     startAt: startSeconds,
     startTime: startSeconds,
@@ -256,37 +283,58 @@ const mapBanner = (banner: any) => {
     targetPlatforms: banner.targetPlatforms || [],
     startDate: banner.startDate,
     endDate: banner.endDate,
-    content: content ? mapContent(content) : undefined,
+    content: content ? mapContent(content, request) : undefined,
   };
 };
 
 const readBannerMultipart = async (request: FastifyRequest): Promise<BannerMultipartData & { thumbnailFilePath?: string }> => {
   const data: BannerMultipartData & { thumbnailFilePath?: string } = {};
 
-  for await (const part of request.parts()) {
-    if (part.type === 'field') {
-      if (part.fieldname === 'title') data.title = part.value as string;
-      if (part.fieldname === 'subtitle') data.subtitle = part.value as string;
-      if (part.fieldname === 'description') data.description = part.value as string;
-      if (part.fieldname === 'genres') data.genres = parseList(part.value);
-      if (part.fieldname === 'languages') data.languages = parseList(part.value);
-      if (part.fieldname === 'position') data.position = Number(part.value);
-      if (part.fieldname === 'isActive') data.isActive = parseBool(part.value, true);
-      if (part.fieldname === 'ctaText') data.ctaText = part.value as string;
-      if (part.fieldname === 'ctaLink') data.ctaLink = part.value as string;
-      if (part.fieldname === 'targetPlatforms') data.targetPlatforms = parsePlatforms(part.value);
-      if (part.fieldname === 'startDate') data.startDate = parseDate(part.value);
-      if (part.fieldname === 'endDate') data.endDate = parseDate(part.value);
-      if (part.fieldname === 'thumbnail') data.thumbnail = part.value as string;
-      if (part.fieldname === 'bannerImage') data.thumbnail = part.value as string;
-      if (part.fieldname === 'contentId') data.contentId = part.value as string;
-    } else if (part.type === 'file') {
-      if (part.fieldname === 'thumbnailFile' || part.fieldname === 'bannerFile') {
-        const uploadedFile = await uploadHandler.saveFileFromPart(part, request as any, 'BANNER');
-        data.thumbnail = uploadedFile.url;
-        data.thumbnailFilePath = uploadedFile.filePath;
+  if ((request as any).isMultipart && (request as any).isMultipart()) {
+    for await (const part of request.parts()) {
+      if (part.type === 'field') {
+        if (part.fieldname === 'title') data.title = part.value as string;
+        if (part.fieldname === 'subtitle') data.subtitle = part.value as string;
+        if (part.fieldname === 'description') data.description = part.value as string;
+        if (part.fieldname === 'genres') data.genres = parseList(part.value);
+        if (part.fieldname === 'languages') data.languages = parseList(part.value);
+        if (part.fieldname === 'position') data.position = Number(part.value);
+        if (part.fieldname === 'isActive') data.isActive = parseBool(part.value, true);
+        if (part.fieldname === 'ctaText') data.ctaText = part.value as string;
+        if (part.fieldname === 'ctaLink') data.ctaLink = part.value as string;
+        if (part.fieldname === 'targetPlatforms') data.targetPlatforms = parsePlatforms(part.value);
+        if (part.fieldname === 'startDate') data.startDate = parseDate(part.value);
+        if (part.fieldname === 'endDate') data.endDate = parseDate(part.value);
+        if (part.fieldname === 'thumbnail') data.thumbnail = part.value as string;
+        if (part.fieldname === 'bannerImage') data.thumbnail = part.value as string;
+        if (part.fieldname === 'imageUrl') data.thumbnail = part.value as string;
+        if (part.fieldname === 'contentId') data.contentId = part.value as string;
+      } else if (part.type === 'file') {
+        if (part.fieldname === 'thumbnailFile' || part.fieldname === 'bannerFile') {
+          const uploadedFile = await uploadHandler.saveFileFromPart(part, request as any, 'BANNER');
+          data.thumbnail = uploadedFile.url;
+          data.thumbnailFilePath = uploadedFile.filePath;
+        }
       }
     }
+  } else if (request.body && typeof request.body === 'object') {
+    const b = request.body as any;
+    if (b.title !== undefined) data.title = b.title;
+    if (b.subtitle !== undefined) data.subtitle = b.subtitle;
+    if (b.description !== undefined) data.description = b.description;
+    if (b.genres !== undefined) data.genres = parseList(b.genres);
+    if (b.languages !== undefined) data.languages = parseList(b.languages);
+    if (b.position !== undefined) data.position = Number(b.position);
+    if (b.isActive !== undefined) data.isActive = parseBool(b.isActive, true);
+    if (b.ctaText !== undefined) data.ctaText = b.ctaText;
+    if (b.ctaLink !== undefined) data.ctaLink = b.ctaLink;
+    if (b.targetPlatforms !== undefined) data.targetPlatforms = parsePlatforms(b.targetPlatforms);
+    if (b.startDate !== undefined) data.startDate = parseDate(b.startDate);
+    if (b.endDate !== undefined) data.endDate = parseDate(b.endDate);
+    if (b.thumbnail !== undefined) data.thumbnail = b.thumbnail;
+    if (b.imageUrl !== undefined) data.thumbnail = b.imageUrl;
+    if (b.bannerImage !== undefined) data.thumbnail = b.bannerImage;
+    if (b.contentId !== undefined) data.contentId = b.contentId;
   }
 
   return data;
@@ -328,11 +376,11 @@ export const listBanners = async (request: FastifyRequest, reply: FastifyReply) 
       BannerModel.countDocuments(filter),
     ]);
 
-    const banners = await populateBannersContent(bannersRaw);
+    const banners = await populateBannersContent(bannersRaw, request);
 
     return {
       success: true,
-      data: banners.map((banner: any) => mapBanner(banner)),
+      data: banners.map((banner: any) => mapBanner(banner, request)),
       pagination: {
         page,
         limit,
@@ -365,6 +413,9 @@ export const createBannerFromContent = async (request: FastifyRequest, reply: Fa
     if (!body.contentId) {
       return reply.status(400).send({ success: false, message: 'contentId is required' });
     }
+    if (!mongoose.Types.ObjectId.isValid(body.contentId)) {
+      return reply.status(400).send({ success: false, message: 'Invalid contentId format' });
+    }
 
     // Fetch the source content (support TV shows and Movies)
     let source: any = null;
@@ -394,24 +445,33 @@ export const createBannerFromContent = async (request: FastifyRequest, reply: Fa
     let resolvedTrailerUrl = source.trailerUrl;
     let resolvedStartSeconds = 0;
     let isEpisodePreview = false;
+
     if (!resolvedTrailerUrl && contentType === 'tvShow') {
       try {
         const { EpisodeModel } = await import('../models/Episode');
         const ep1 = await EpisodeModel.findOne({ tvShowId: source._id })
           .sort({ season: 1, episode: 1 })
-          .select('trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds')
+          .select('trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds videoQualities')
           .lean();
         if (ep1) {
           if (ep1.trailerUrl) {
             resolvedTrailerUrl = ep1.trailerUrl;
             resolvedStartSeconds = 0;
           } else {
-            resolvedTrailerUrl = ep1.hlsUrl || ep1.sourceVideoUrl || ep1.videoUrl;
+            const epStream = resolveVideoStream(ep1, request, 'episodes');
+            resolvedTrailerUrl = epStream.hlsUrl || epStream.streamUrl || ep1.hlsUrl || ep1.sourceVideoUrl || ep1.videoUrl;
             resolvedStartSeconds = ep1.sourceStartSeconds || calculateEpisodeStartSeconds(ep1.duration);
             isEpisodePreview = true;
           }
         }
       } catch {}
+    } else if (!resolvedTrailerUrl && contentType === 'movie') {
+      const movieStream = resolveVideoStream(source, request, 'movies');
+      if (movieStream.streamUrl) {
+        resolvedTrailerUrl = movieStream.streamUrl;
+        resolvedStartSeconds = calculateEpisodeStartSeconds(source.duration);
+        isEpisodePreview = true;
+      }
     }
 
     const thumbnail =
@@ -446,11 +506,11 @@ export const createBannerFromContent = async (request: FastifyRequest, reply: Fa
       await resequenceBanners(existing._id.toString(), existing.position);
 
       const bannerRaw = await BannerModel.findById(existing._id).lean();
-      const populated = await populateBannersContent([bannerRaw]);
+      const populated = await populateBannersContent([bannerRaw], request);
 
       return reply.status(200).send({
         success: true,
-        data: mapBanner(populated[0]),
+        data: mapBanner(populated[0], request),
         message: 'Banner updated successfully from content.',
       });
     }
@@ -477,11 +537,11 @@ export const createBannerFromContent = async (request: FastifyRequest, reply: Fa
     await resequenceBanners(banner._id.toString(), banner.position);
 
     const bannerRaw = await BannerModel.findById(banner._id).lean();
-    const populated = await populateBannersContent([bannerRaw]);
+    const populated = await populateBannersContent([bannerRaw], request);
 
     return reply.status(201).send({
       success: true,
-      data: mapBanner(populated[0]),
+      data: mapBanner(populated[0], request),
       message: 'Banner created successfully from existing content.',
     });
   } catch (error: any) {
@@ -508,7 +568,7 @@ export const createBanner = async (request: FastifyRequest, reply: FastifyReply)
     let linkedIsEpisodePreview = false;
     let linkedContentType: 'tvShow' | 'movie' = 'tvShow';
 
-    if (data.contentId) {
+    if (data.contentId && mongoose.Types.ObjectId.isValid(data.contentId)) {
       const show = await TVShowModel.findById(data.contentId).lean();
       if (show) {
         linkedContentType = 'tvShow';
@@ -519,14 +579,15 @@ export const createBanner = async (request: FastifyRequest, reply: FastifyReply)
             const { EpisodeModel } = await import('../models/Episode');
             const ep1 = await EpisodeModel.findOne({ tvShowId: show._id })
               .sort({ season: 1, episode: 1 })
-              .select('trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds')
+              .select('trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds videoQualities')
               .lean();
             if (ep1) {
               if (ep1.trailerUrl) {
                 linkedTrailerUrl = ep1.trailerUrl;
                 linkedStartSeconds = 0;
               } else {
-                linkedTrailerUrl = ep1.hlsUrl || ep1.sourceVideoUrl || ep1.videoUrl;
+                const epStream = resolveVideoStream(ep1, request, 'episodes');
+                linkedTrailerUrl = epStream.hlsUrl || epStream.streamUrl || ep1.hlsUrl || ep1.sourceVideoUrl || ep1.videoUrl;
                 linkedStartSeconds = ep1.sourceStartSeconds || calculateEpisodeStartSeconds(ep1.duration);
                 linkedIsEpisodePreview = true;
               }
@@ -535,12 +596,19 @@ export const createBanner = async (request: FastifyRequest, reply: FastifyReply)
         }
       } else {
         const movie = await MovieModel.findById(data.contentId).lean();
-        if (!movie) {
-          return reply.status(404).send({ success: false, message: 'Linked content not found' });
+        if (movie) {
+          linkedContentType = 'movie';
+          linkedTrailerUrl = movie.trailerUrl;
+          linkedVideoUrl = movie.videoUrl || movie.hlsUrl;
+          if (!linkedTrailerUrl) {
+            const movieStream = resolveVideoStream(movie, request, 'movies');
+            if (movieStream.streamUrl) {
+              linkedTrailerUrl = movieStream.streamUrl;
+              linkedStartSeconds = calculateEpisodeStartSeconds(movie.duration);
+              linkedIsEpisodePreview = true;
+            }
+          }
         }
-        linkedContentType = 'movie';
-        linkedTrailerUrl = movie.trailerUrl;
-        linkedVideoUrl = movie.videoUrl || movie.hlsUrl;
       }
     }
 
@@ -557,7 +625,7 @@ export const createBanner = async (request: FastifyRequest, reply: FastifyReply)
       isEpisodePreview: linkedIsEpisodePreview,
       ctaText: data.ctaText || 'Watch Now',
       ctaLink: data.ctaLink,
-      contentId: data.contentId || undefined,
+      contentId: (data.contentId && mongoose.Types.ObjectId.isValid(data.contentId)) ? data.contentId : undefined,
       type: 'hero',
       contentType: linkedContentType,
       position: Number.isFinite(data.position) ? data.position : 0,
@@ -570,11 +638,11 @@ export const createBanner = async (request: FastifyRequest, reply: FastifyReply)
     await resequenceBanners(banner._id.toString(), banner.position);
 
     const bannerRaw = await BannerModel.findById(banner._id).lean();
-    const populated = await populateBannersContent([bannerRaw]);
+    const populated = await populateBannersContent([bannerRaw], request);
 
     return reply.status(201).send({
       success: true,
-      data: mapBanner(populated[0]),
+      data: mapBanner(populated[0], request),
       message: 'Banner created successfully.',
     });
   } catch (error: any) {
@@ -592,12 +660,12 @@ export const getBannerById = async (request: FastifyRequest, reply: FastifyReply
       return reply.status(404).send({ success: false, message: 'Banner not found' });
     }
 
-    const populated = await populateBannersContent([bannerRaw]);
+    const populated = await populateBannersContent([bannerRaw], request);
     const banner = populated[0];
 
     return {
       success: true,
-      data: mapBanner(banner),
+      data: mapBanner(banner, request),
     };
   } catch (error: any) {
     console.error('Error getting banner:', error);
@@ -673,12 +741,12 @@ export const updateBanner = async (request: FastifyRequest, reply: FastifyReply)
     if (!bannerRaw) {
       return reply.status(404).send({ success: false, message: 'Banner not found' });
     }
-    const populated = await populateBannersContent([bannerRaw]);
+    const populated = await populateBannersContent([bannerRaw], request);
     const banner = populated[0];
 
     return {
       success: true,
-      data: mapBanner(banner),
+      data: mapBanner(banner, request),
       message: 'Banner updated successfully',
     };
   } catch (error: any) {

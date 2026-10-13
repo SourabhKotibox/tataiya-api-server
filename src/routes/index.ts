@@ -139,12 +139,14 @@ const router: FastifyPluginAsync = async (fastify) => {
 
   // Home page route for app (layout/sections only — no banners)
   fastify.get('/home', getHomePage);
+  fastify.get('/app/home', getHomePage);
 
   // App Banners — separate from home layout
   fastify.get('/app/banners', getAppBanners);
   
   // Explore page (infinite scroll)
   fastify.get('/explore', getExplore);
+  fastify.get('/app/explore', getExplore);
 
   // Search page (trending keywords + query results)
   fastify.get('/search', getSearchPage);

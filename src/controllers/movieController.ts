@@ -269,6 +269,15 @@ export const updateMovie = async (request: FastifyRequest, reply: FastifyReply) 
       body.processingStatus = 'ready';
     }
 
+    const rawTrailer = body.trailerUrl ?? body.trailer ?? body.trailer_url ?? body.trailerFilePath;
+    if (rawTrailer !== undefined && typeof rawTrailer === 'string' && rawTrailer.trim() !== '') {
+      body.trailerUrl = rawTrailer.trim();
+    } else if (body.removeTrailer === true) {
+      body.trailerUrl = '';
+    } else {
+      delete body.trailerUrl;
+    }
+
     // Keep full-movie progressive source separate from trailer
     if (mainVideo && !mainVideo.startsWith('blob:') && mainVideo !== trailer && !mainVideo.includes('.m3u8')) {
       body.sourceVideoUrl = mainVideo;
@@ -285,6 +294,15 @@ export const updateMovie = async (request: FastifyRequest, reply: FastifyReply) 
 
     if (!movie) {
       return reply.status(404).send({ success: false, error: 'Movie not found' });
+    }
+
+    if (body.trailerUrl !== undefined && body.trailerUrl !== '') {
+      try {
+        const { BannerModel } = await import('../models/Banner');
+        await BannerModel.updateMany({ contentId: id }, { $set: { trailerUrl: body.trailerUrl } });
+      } catch (bannerErr) {
+        logger.warn({ bannerErr, id }, 'Failed to sync trailerUrl to banners');
+      }
     }
 
     if (body.sections !== undefined) {

@@ -397,10 +397,12 @@ export const updateTVShow = async (request: FastifyRequest, reply: FastifyReply)
     }
 
     const rawTrailer = body.trailerUrl ?? body.trailer ?? body.trailer_url ?? body.trailerFilePath;
-    if (rawTrailer !== undefined) {
-      body.trailerUrl = typeof rawTrailer === 'string' ? rawTrailer.trim() : '';
+    if (rawTrailer !== undefined && typeof rawTrailer === 'string' && rawTrailer.trim() !== '') {
+      body.trailerUrl = rawTrailer.trim();
+    } else if (body.removeTrailer === true) {
+      body.trailerUrl = '';
     } else {
-      // Don't wipe existing trailer if not submitted in body
+      // Don't wipe existing trailer if not submitted in body or submitted as empty string
       delete body.trailerUrl;
     }
 
@@ -433,7 +435,7 @@ export const updateTVShow = async (request: FastifyRequest, reply: FastifyReply)
       return reply.status(404).send({ success: false, error: 'TVShow not found' });
     }
 
-    if (body.trailerUrl !== undefined) {
+    if (body.trailerUrl !== undefined && body.trailerUrl !== '') {
       try {
         const { BannerModel } = await import('../models/Banner');
         await BannerModel.updateMany({ contentId: id }, { $set: { trailerUrl: body.trailerUrl } });

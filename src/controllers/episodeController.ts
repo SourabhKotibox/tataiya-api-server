@@ -578,10 +578,8 @@ export const backfillEpisodeDurations = async (request: any, reply: any) => {
       .select('_id title sourceVideoUrl hlsUrl duration')
       .lean();
 
-    const { probeDurationFromUrl } = await import('../services/videoProcessor');
-    if (typeof probeDurationFromUrl !== 'function') {
-      // Fallback: run inline probe
-    }
+    const videoProc = (await import('../services/videoProcessor')) as any;
+    const probeDurationFromUrl = videoProc?.probeDurationFromUrl;
 
     let updated = 0;
     let failed = 0;

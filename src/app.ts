@@ -21,7 +21,8 @@ fs.mkdirSync(path.join(uploadsRoot, 'temp'), { recursive: true });
 
 const fastify = Fastify({
   logger: true,
-  bodyLimit: 2000 * 1024 * 1024 // 2GB
+  bodyLimit: 2000 * 1024 * 1024, // 2GB
+  trustProxy: true,
 });
 
 // Register request context lifecycle hook
@@ -92,24 +93,33 @@ fastify.register(fastifyMultipart as any, {
   }
 });
 
-// Register Static file serving
+// Register Static file serving with universal CORS & streaming support
 fastify.register(fastifyStatic, {
   root: uploadsRoot,
   prefix: '/uploads/',
   setHeaders: (res, filePath) => {
     const lower = String(filePath).toLowerCase();
+
+    // Universal streaming & CORS headers for video players (ExoPlayer, AVPlayer, web)
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Range');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
+    res.setHeader('Accept-Ranges', 'bytes');
+
     if (lower.endsWith('.vtt')) {
       res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-      res.setHeader('Access-Control-Allow-Origin', '*');
     } else if (lower.endsWith('.srt')) {
       res.setHeader('Content-Type', 'application/x-subrip; charset=utf-8');
-      res.setHeader('Access-Control-Allow-Origin', '*');
     } else if (lower.endsWith('.m3u8')) {
       res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'no-cache');
     } else if (lower.endsWith('.ts')) {
       res.setHeader('Content-Type', 'video/mp2t');
-      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'public, max-age=86400, immutable');
+    } else if (lower.endsWith('.mp4')) {
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
     }
   },
 });

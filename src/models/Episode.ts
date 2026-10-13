@@ -10,6 +10,7 @@ export interface IEpisode extends Document {
   description?: string;
   thumbnail?: string;
   sourceVideoUrl?: string;
+  videoUrl?: string;
   sourceStartSeconds?: number;
   sourceEndSeconds?: number;
   hlsUrl?: string;
@@ -21,6 +22,7 @@ export interface IEpisode extends Document {
   }>;
   trailerUrl?: string;
   duration?: number;
+  status?: string;
   views: number;
   likes: number;
   downloadAllowed: boolean;
@@ -46,9 +48,11 @@ const EpisodeSchema = new Schema<IEpisode>(
     description: String,
     thumbnail: String,
     sourceVideoUrl: String,
+    videoUrl: String,
     sourceStartSeconds: Number,
     sourceEndSeconds: Number,
     hlsUrl: String,
+    status: String,
     hlsS3Prefix: String,
     videoQualities: [
       {

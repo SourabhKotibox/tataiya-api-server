@@ -16,21 +16,12 @@ import mongoose from 'mongoose';
 import { buildShareUrl } from '../lib/config';
 import { normalizePlanKey } from './subscriptionController';
 import { calculateEpisodeStartSeconds } from '../lib/videoPreview';
+import { toAbsoluteUrl, resolveVideoStream, findDiskHlsMaster } from '../lib/urlHelper';
 
 // ── URL Resolver ─────────────────────────────────────────────────────────────
-// Converts any stored path/key to a proper full URL:
-// - Already full URL (https://...) → returned as-is
-// - Local relative path → full server URL
+// Converts any stored path/key to a proper full HTTPS URL
 const buildUrlResolver = (request: FastifyRequest) =>
-  (url: string | null | undefined): string | null => {
-    if (!url) return null;
-    if (url.startsWith('http://') || url.startsWith('https://')) return url;
-    let relPath = url;
-    if (!relPath.startsWith('/uploads/')) {
-      relPath = relPath.startsWith('uploads/') ? `/${relPath}` : `/uploads/${relPath.startsWith('/') ? relPath.slice(1) : relPath}`;
-    }
-    return `${request.protocol}://${request.hostname}${relPath}`;
-  };
+  (url: string | null | undefined): string | null => toAbsoluteUrl(request, url);
 
 // Helper: try to extract userId from JWT (optional auth — no error if missing/invalid)
 const getAuthData = async (
@@ -88,11 +79,14 @@ const mapContentItem = (
 ) => {
   const isShow = item.contentType === 'tvShow' || item.type === 'tvShow' || item.type === 'show' || !!item.totalSeasons;
   const contentType = isShow ? 'tvShow' : 'movie';
+  const folderType = isShow ? 'episodes' : 'movies';
   const contentPlanRaw = item.planRequired || item.plan || 'free';
   const isLocked = normalizePlanKey(userPlan) === 'free';
+
+  const videoStream = resolveVideoStream(item, null, folderType);
   const trailerUrl = resolveUrl(item.trailerUrl || null);
-  const videoUrl = resolveUrl(item.hlsUrl || item.videoUrl || null);
-  const streamUrl = trailerUrl || videoUrl;
+  const streamUrl = trailerUrl || videoStream.streamUrl;
+  const hlsUrl = videoStream.hlsUrl || trailerUrl || videoStream.streamUrl;
   const startSeconds = item.startSeconds || 0;
 
   return {
@@ -131,10 +125,11 @@ const mapContentItem = (
     status: item.status,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
-    videoUrl,
-    trailerUrl,
+    videoUrl: streamUrl,
+    trailerUrl: trailerUrl || streamUrl,
     streamUrl,
-    hlsUrl: videoUrl || trailerUrl,
+    hlsUrl,
+    videoQualities: videoStream.videoQualities,
     startSeconds,
     startAt: startSeconds,
     startTime: startSeconds,
@@ -148,7 +143,7 @@ const mapContentItem = (
   };
 };
 
-const populateBannersContent = async (banners: any[]) => {
+const populateBannersContent = async (banners: any[], request?: FastifyRequest | null) => {
   const contentIds = banners.map((b) => b.contentId).filter(Boolean);
   if (contentIds.length === 0) return banners;
 
@@ -172,7 +167,7 @@ const populateBannersContent = async (banners: any[]) => {
       const { EpisodeModel } = await import('../models/Episode');
       const firstEpisodes = await EpisodeModel.find({ tvShowId: { $in: showIds } })
         .sort({ season: 1, episode: 1 })
-        .select('tvShowId trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds')
+        .select('tvShowId trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds videoQualities')
         .lean();
       for (const ep of firstEpisodes) {
         const sId = ep.tvShowId?.toString();
@@ -180,7 +175,8 @@ const populateBannersContent = async (banners: any[]) => {
           const show = contentMap.get(sId);
           const hasShowTrailer = !!show.trailerUrl;
           const hasEpTrailer = !!ep.trailerUrl;
-          const epVideo = ep.hlsUrl || ep.sourceVideoUrl || ep.videoUrl;
+          const epStream = resolveVideoStream(ep, request, 'episodes');
+          const epVideo = epStream.hlsUrl || epStream.streamUrl || ep.hlsUrl || ep.sourceVideoUrl || ep.videoUrl;
           const epDuration = ep.duration;
           const epStart = ep.sourceStartSeconds || calculateEpisodeStartSeconds(epDuration);
 
@@ -191,14 +187,16 @@ const populateBannersContent = async (banners: any[]) => {
             } else if (epVideo) {
               show.trailerUrl = epVideo;
               show.videoUrl = epVideo;
-              show.hlsUrl = epVideo;
+              show.hlsUrl = epStream.hlsUrl || epVideo;
               show.startSeconds = epStart;
               show.isEpisodePreview = true;
+              show.videoQualities = epStream.videoQualities;
             }
           }
           if (!show.videoUrl && epVideo) {
             show.videoUrl = epVideo;
-            show.hlsUrl = epVideo;
+            show.hlsUrl = epStream.hlsUrl || epVideo;
+            if (!show.videoQualities?.length) show.videoQualities = epStream.videoQualities;
           }
         }
       }
@@ -214,10 +212,14 @@ const populateBannersContent = async (banners: any[]) => {
       if (c) {
         if (!banner.trailerUrl) banner.trailerUrl = c.trailerUrl;
         if (!banner.videoUrl) banner.videoUrl = c.videoUrl || c.hlsUrl;
+        if (!banner.hlsUrl) banner.hlsUrl = c.hlsUrl || c.videoUrl;
         if (c.startSeconds !== undefined && (!banner.startSeconds || banner.startSeconds === 0)) {
           banner.startSeconds = c.startSeconds;
         }
         if (c.isEpisodePreview) banner.isEpisodePreview = true;
+        if (c.videoQualities?.length && !banner.videoQualities?.length) {
+          banner.videoQualities = c.videoQualities;
+        }
       }
     }
   }
@@ -233,12 +235,20 @@ const mapBanner = (
   isLikedByUser = false,
   userPlan = 'free',
   isWishlisted = false,
+  request?: FastifyRequest | null,
 ) => {
   const content = banner.contentId;
   const thumbnail = resolveUrl(content?.thumbnail || banner.imageUrl);
+  const isShow = banner.contentType === 'tvShow' || content?.contentType === 'tvShow' || content?.type === 'tvShow' || !!content?.totalSeasons;
+  const folderType = isShow ? 'episodes' : 'movies';
+
+  const contentStream = resolveVideoStream(content, request, folderType);
+  const bannerStream = resolveVideoStream(banner, request, folderType);
+
   const trailerUrl = resolveUrl(banner.trailerUrl || content?.trailerUrl || null);
-  const videoUrl = resolveUrl(banner.videoUrl || content?.hlsUrl || content?.videoUrl || null);
-  const streamUrl = trailerUrl || videoUrl;
+  const streamUrl = trailerUrl || bannerStream.streamUrl || contentStream.streamUrl;
+  const hlsUrl = bannerStream.hlsUrl || contentStream.hlsUrl || streamUrl;
+  const videoQualities = (bannerStream.videoQualities?.length ? bannerStream.videoQualities : contentStream.videoQualities) || [];
   const startSeconds = banner.startSeconds || content?.startSeconds || 0;
 
   return {
@@ -248,11 +258,12 @@ const mapBanner = (
     description: banner.description,
     thumbnail,
     imageUrl: resolveUrl(banner.imageUrl),
-    mobileImageUrl: resolveUrl(banner.mobileImageUrl),
-    trailerUrl,
-    videoUrl: trailerUrl || videoUrl,
+    mobileImageUrl: resolveUrl(banner.mobileImageUrl || banner.imageUrl),
+    trailerUrl: trailerUrl || streamUrl,
+    videoUrl: streamUrl,
     streamUrl,
-    hlsUrl: trailerUrl || videoUrl,
+    hlsUrl,
+    videoQualities,
     startSeconds,
     startAt: startSeconds,
     startTime: startSeconds,
@@ -597,7 +608,7 @@ export const getAppBanners = async (request: FastifyRequest, reply: FastifyReply
       .limit(limit)
       .lean();
 
-    const banners = await populateBannersContent(bannersRaw);
+    const banners = await populateBannersContent(bannersRaw, request);
 
     const { userId, userPlan } = await getAuthData(request);
     const allContentIds = banners
@@ -618,12 +629,12 @@ export const getAppBanners = async (request: FastifyRequest, reply: FastifyReply
     }
 
     const mappedBanners = banners.map(banner => {
-      if (!banner.contentId) return mapBanner(banner, resolveUrl, 0, false, userPlan, false);
+      if (!banner.contentId) return mapBanner(banner, resolveUrl, 0, false, userPlan, false, request);
       const cid = (banner.contentId as any)._id.toString();
       const likeCount = (banner.contentId as any).likes || 0;
       const isLikedByUser = likedContentIdSet.has(cid);
       const isWishlisted = wishlistedContentIdSet.has(cid);
-      return mapBanner(banner, resolveUrl, likeCount, isLikedByUser, userPlan, isWishlisted);
+      return mapBanner(banner, resolveUrl, likeCount, isLikedByUser, userPlan, isWishlisted, request);
     });
 
     return reply.send({

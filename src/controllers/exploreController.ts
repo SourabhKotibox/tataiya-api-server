@@ -14,6 +14,7 @@ import {
 } from '../lib/subscriptionAccess';
 import { buildShareUrl } from '../lib/config';
 import { calculateEpisodeStartSeconds } from '../lib/videoPreview';
+import { toAbsoluteUrl, resolveVideoStream } from '../lib/urlHelper';
 
 // How many extra items to fetch per page to survive deduplication filtering
 const FETCH_MULTIPLIER = 4;
@@ -32,20 +33,6 @@ const getOptionalUserId = (request: FastifyRequest): string | null => {
   }
 };
 
-// Helper to convert relative URLs to absolute URLs
-const toAbsoluteUrl = (request: FastifyRequest, url: string | null | undefined): string | null => {
-  if (!url) return null;
-  if (url.startsWith('http://') || url.startsWith('https://')) return url;
-  
-  let relPath = url;
-  if (!relPath.startsWith('/uploads/')) {
-    relPath = relPath.startsWith('uploads/') ? `/${relPath}` : `/uploads/${relPath.startsWith('/') ? relPath.slice(1) : relPath}`;
-  }
-  
-  const baseUrl = `${request.protocol}://${request.hostname}`;
-  return `${baseUrl}${relPath}`;
-};
-
 // Helper function to map content items for the explore feed
 const mapContentItem = (
   request: FastifyRequest,
@@ -54,37 +41,80 @@ const mapContentItem = (
   isLikedByUser = false,
   userPlan = 'free',
   type: 'movie' | 'show' = 'show',
-  episodeTrailerUrl: string | null = null,
-  episodeVideoUrl: string | null = null,
+  epDoc: any = null,
   isWishlisted = false,
-  episodeDuration?: number,
-  episodeStartSeconds?: number,
 ) => {
   const contentPlan = item.planRequired || item.plan || 'free';
   const locked = isContentLocked(contentPlan, userPlan);
-  const accessible = canAccessContent(contentPlan, userPlan);
 
-  const hasDirectTrailer = !!item.trailerUrl;
-  const hasEpisodeTrailer = !!episodeTrailerUrl;
-  const hasAnyTrailer = hasDirectTrailer || hasEpisodeTrailer;
-
-  const rawTrailer = item.trailerUrl || episodeTrailerUrl;
-  const rawVideo = item.hlsUrl || episodeVideoUrl;
-
-  const trailerUrl = toAbsoluteUrl(request, rawTrailer) || null;
-  // If trailerUrl is still missing for TV show, fall back to episode video stream for short preview
-  const effectiveTrailerUrl = trailerUrl || toAbsoluteUrl(request, rawVideo) || null;
-  const fullVideoUrl = accessible ? (toAbsoluteUrl(request, rawVideo) || null) : null;
-  const playableUrl = effectiveTrailerUrl || fullVideoUrl || null;
-
-  // If trailer is missing and we run Episode 1, start 5-10 minutes from mid (300-600s)
-  const isEpisodePreview = !hasAnyTrailer && !!effectiveTrailerUrl;
+  const isShow = type === 'show';
+  let streamUrl: string | null = null;
+  let hlsUrl: string | null = null;
+  let videoUrl: string | null = null;
+  let trailerUrl: string | null = null;
+  let videoQualities: Array<{ quality: string; url: string; size?: number }> = [];
   let startSeconds = 0;
-  if (isEpisodePreview) {
-    if (episodeStartSeconds && episodeStartSeconds > 0) {
-      startSeconds = episodeStartSeconds;
+  let isEpisodePreview = false;
+
+  if (isShow) {
+    const hasDirectTrailer = !!item.trailerUrl;
+    const hasEpTrailer = !!epDoc?.trailerUrl;
+    const showTrailerAbs = hasDirectTrailer ? toAbsoluteUrl(request, item.trailerUrl) : null;
+    const epTrailerAbs = hasEpTrailer ? toAbsoluteUrl(request, epDoc.trailerUrl) : null;
+    const epStream = epDoc
+      ? resolveVideoStream(epDoc, request, 'episodes')
+      : resolveVideoStream(item, request, 'episodes');
+
+    if (showTrailerAbs) {
+      trailerUrl = showTrailerAbs;
+      streamUrl = showTrailerAbs;
+      videoUrl = showTrailerAbs;
+      hlsUrl = showTrailerAbs;
+      videoQualities = epStream.videoQualities;
+      startSeconds = 0;
+      isEpisodePreview = false;
+    } else if (epTrailerAbs) {
+      trailerUrl = epTrailerAbs;
+      streamUrl = epTrailerAbs;
+      videoUrl = epTrailerAbs;
+      hlsUrl = epTrailerAbs;
+      videoQualities = epStream.videoQualities;
+      startSeconds = 0;
+      isEpisodePreview = false;
     } else {
-      startSeconds = calculateEpisodeStartSeconds(episodeDuration || item.duration);
+      // Episode 1 preview when no trailer exists
+      streamUrl = epStream.streamUrl;
+      hlsUrl = epStream.hlsUrl || epStream.streamUrl;
+      videoUrl = epStream.streamUrl;
+      trailerUrl = epStream.streamUrl;
+      videoQualities = epStream.videoQualities;
+      const duration = epDoc?.duration || item.duration;
+      startSeconds = epDoc?.sourceStartSeconds || calculateEpisodeStartSeconds(duration);
+      isEpisodePreview = true;
+    }
+  } else {
+    // Movie
+    const hasMovieTrailer = !!item.trailerUrl;
+    const movieTrailerAbs = hasMovieTrailer ? toAbsoluteUrl(request, item.trailerUrl) : null;
+    const movieStream = resolveVideoStream(item, request, 'movies');
+
+    if (movieTrailerAbs) {
+      trailerUrl = movieTrailerAbs;
+      streamUrl = movieTrailerAbs;
+      videoUrl = movieTrailerAbs;
+      hlsUrl = movieTrailerAbs;
+      videoQualities = movieStream.videoQualities;
+      startSeconds = 0;
+      isEpisodePreview = false;
+    } else {
+      // Movie preview
+      streamUrl = movieStream.streamUrl;
+      hlsUrl = movieStream.hlsUrl || movieStream.streamUrl;
+      videoUrl = movieStream.streamUrl;
+      trailerUrl = movieStream.streamUrl;
+      videoQualities = movieStream.videoQualities;
+      startSeconds = calculateEpisodeStartSeconds(item.duration);
+      isEpisodePreview = true;
     }
   }
 
@@ -95,6 +125,7 @@ const mapContentItem = (
     shortDescription: item.shortDescription,
     thumbnail: toAbsoluteUrl(request, item.thumbnail),
     bannerImage: toAbsoluteUrl(request, item.bannerImage),
+    posterImage: toAbsoluteUrl(request, item.posterImage || item.bannerImage || item.thumbnail),
     type,
     contentType: type === 'show' ? 'tvShow' : 'movie',
     genres: (item.genres || []).map((g: any) => g.name || g),
@@ -122,10 +153,11 @@ const mapContentItem = (
     status: item.status,
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
-    videoUrl: playableUrl,
-    trailerUrl: effectiveTrailerUrl,
-    streamUrl: playableUrl,
-    hlsUrl: playableUrl,
+    videoUrl,
+    trailerUrl,
+    streamUrl,
+    hlsUrl,
+    videoQualities,
     startSeconds,
     startAt: startSeconds,
     startTime: startSeconds,
@@ -290,7 +322,7 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
         tvShowId: { $in: showIds },
       })
         .sort({ season: 1, episode: 1 })
-        .select('tvShowId trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds isFree')
+        .select('tvShowId trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds videoQualities isFree')
         .lean();
 
       for (const ep of firstEpisodes) {
@@ -330,10 +362,6 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
       const isWishlisted: boolean = wishlistedContentIdSet.has(cid);
       const isShow = content._type === 'show';
       const epDoc = isShow ? episodesMap.get(cid) : null;
-      const epTrailer = epDoc?.trailerUrl || null;
-      const epVideo = epDoc?.hlsUrl || epDoc?.sourceVideoUrl || epDoc?.videoUrl || null;
-      const epDuration = epDoc?.duration;
-      const epStartSeconds = epDoc?.sourceStartSeconds;
 
       return mapContentItem(
         request,
@@ -342,11 +370,8 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
         isLikedByUser,
         userPlan,
         content._type || 'show',
-        epTrailer,
-        epVideo,
+        epDoc,
         isWishlisted,
-        epDuration,
-        epStartSeconds,
       );
     });
 
