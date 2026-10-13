@@ -24,13 +24,23 @@ const syncManualContent = async (section: any) => {
 export const getSections = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
     const query = request.query as {
-      contentType?: 'movie';
+      contentType?: string;
       activeOnly?: string;
+      platform?: 'app' | 'web' | 'all';
     };
 
     const filter: any = {};
     if (query.contentType) filter.contentType = query.contentType;
     if (query.activeOnly === 'true') filter.isActive = true;
+    if (query.platform === 'app' || query.platform === 'web') {
+      filter.$or = [
+        { platform: query.platform },
+        { platform: 'all' },
+        { platform: { $exists: false } },
+      ];
+    } else if (query.platform === 'all') {
+      filter.platform = 'all';
+    }
 
     const sections = await SectionModel.find(filter).sort({ position: 1 });
     reply.send({ success: true, data: sections });
@@ -62,9 +72,9 @@ export const createSection = async (request: FastifyRequest, reply: FastifyReply
     // Normalize / sanitize payload from admin UI
     if (!body.key) body.key = `section-${Date.now()}`;
     if (!body.category) body.category = body.title || body.key;
-    if (!body.contentType || body.contentType === 'mixed') {
+    if (!body.contentType) {
       // web home builder sends mixed; store as mixed (allowed)
-      body.contentType = body.contentType || 'movie';
+      body.contentType = 'movie';
     }
     if (Array.isArray(body.manualContentIds)) {
       body.manualContentIds = body.manualContentIds.filter((id: string) =>

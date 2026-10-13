@@ -330,7 +330,14 @@ export const getHomePage = async (request: FastifyRequest, reply: FastifyReply) 
     }
 
     // Get sections from database, or fallback to default
-    const dbSections = await SectionModel.find({ isActive: true })
+    const dbSections = await SectionModel.find({
+      isActive: true,
+      $or: [
+        { platform: 'app' },
+        { platform: 'all' },
+        { platform: { $exists: false } },
+      ],
+    })
       .select('key title category contentType sortBy limit position isActive layout showViewAll itemType filter contentSelection manualContentIds')
       .sort({ position: 1 })
       .lean();
