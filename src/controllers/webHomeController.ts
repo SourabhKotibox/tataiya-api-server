@@ -32,15 +32,17 @@ const resolveMediaUrl = (value?: string | null): string => {
 };
 
 const formatDuration = (duration: any): string => {
-  if (!duration && duration !== 0) return '120m';
+  if (!duration && duration !== 0) return '';
   if (typeof duration === 'string' && /[hm]/i.test(duration)) return duration;
   const n = Number(duration);
-  if (!Number.isFinite(n) || n <= 0) return '120m';
+  if (!Number.isFinite(n) || n <= 0) return '';
   // Values > 300 are almost certainly seconds
   if (n > 300) {
     const h = Math.floor(n / 3600);
     const m = Math.floor((n % 3600) / 60);
-    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+    const s = n % 60;
+    if (h > 0) return s > 0 ? `${h}h ${m}m ${s}s` : `${h}h ${m}m`;
+    return s > 0 ? `${m}m ${s}s` : `${m}m`;
   }
   return `${Math.round(n)}m`;
 };
@@ -83,7 +85,9 @@ const mapContentItem = (item: any, _isHero = false) => {
     _id: id,
     title: item.title,
     poster: resolveMediaUrl(item.posterImage || item.thumbnail || ''),
+    posterImage: resolveMediaUrl(item.posterImage || ''),
     backdrop: resolveMediaUrl(item.bannerImage || item.thumbnail || ''),
+    bannerImage: resolveMediaUrl(item.bannerImage || ''),
     type: isShow ? 'show' : 'movie',
     contentType: isShow ? 'tvShow' : 'movie',
     year: item.year?.toString() || new Date(item.createdAt).getFullYear().toString(),
@@ -106,12 +110,13 @@ const mapContentItem = (item: any, _isHero = false) => {
     featured: !!item.featured,
     views: item.views || 0,
     seasons: item.totalSeasons || undefined,
+    totalSeasons: item.totalSeasons || undefined,
   };
 };
 
 let homeCacheData: any = null;
 let homeCacheTime = 0;
-const CACHE_TTL = 120000; // 2 minutes
+const CACHE_TTL = 10000; // 10 seconds
 
 export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
@@ -135,7 +140,12 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
       (async () => {
         const bannersRaw = await BannerModel.find({
           isActive: true,
-          targetPlatforms: 'web'
+          $or: [
+            { targetPlatforms: 'web' },
+            { targetPlatforms: { $in: ['web', 'all'] } },
+            { targetPlatforms: { $exists: false } },
+            { targetPlatforms: { $size: 0 } },
+          ],
         }).sort({ position: 1, createdAt: -1 }).limit(10).lean();
 
         const contentIds = bannersRaw.map(b => b.contentId).filter(Boolean);
@@ -152,16 +162,47 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
           contentMap.set(show._id.toString(), { ...show, contentType: 'tvShow' });
         }
 
+        // Pre-fetch Episode 1 trailer or video for TV shows
+        const showIds = tvShows.map((s: any) => s._id);
+        const showEpisodeMap = new Map();
+        if (showIds.length > 0) {
+          try {
+            const { EpisodeModel } = await import('../models/Episode');
+            const firstEpisodes = await EpisodeModel.find({
+              $or: [
+                { tvShowId: { $in: showIds } },
+                { tvShowId: { $in: showIds.map((id: any) => id.toString()) } }
+              ]
+            })
+              .sort({ season: 1, episode: 1 })
+              .select('tvShowId trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds')
+              .lean();
+            for (const ep of firstEpisodes) {
+              const sKey = ep.tvShowId?.toString();
+              if (sKey && !showEpisodeMap.has(sKey)) {
+                showEpisodeMap.set(sKey, ep);
+              }
+            }
+          } catch (e) {
+            logger.warn({ e }, 'Error fetching episode for web banners');
+          }
+        }
+
         return bannersRaw.map((banner: any) => {
           const content = banner.contentId ? contentMap.get(banner.contentId.toString()) : null;
           const bannerImage = resolveMediaUrl(banner.imageUrl || '');
           if (content) {
             const planRequired = content.planRequired || 'free';
             const locked = isContentLocked(planRequired, 'free');
-            const stream = locked
-              ? null
-              : (resolveMediaUrl(content.hlsUrl || content.videoUrl || '') || null);
             const isShow = content.contentType === 'tvShow';
+            const ep = isShow ? showEpisodeMap.get(content._id.toString()) : null;
+            const showTrailer = banner.trailerUrl || content.trailerUrl || ep?.trailerUrl || null;
+            const epVideo = ep?.hlsUrl || ep?.videoUrl || ep?.sourceVideoUrl || null;
+            const contentVideo = content.hlsUrl || content.videoUrl || content.sourceVideoUrl || null;
+            const playableStream = epVideo || contentVideo || null;
+            const stream = locked ? null : (resolveMediaUrl(playableStream || '') || null);
+            const resolvedTrailer = resolveMediaUrl(showTrailer || '') || stream || null;
+
             return {
               id: content._id.toString(),
               title: banner.title || content.title,
@@ -172,16 +213,16 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
               type: isShow ? 'show' : 'movie',
               contentType: isShow ? 'tvShow' : 'movie',
               year: content.year?.toString() || new Date(content.createdAt).getFullYear().toString(),
-              duration: formatDuration(content.duration),
+              duration: formatDuration(content.duration || ep?.duration),
               imdbRating: content.imdbRating?.toString() || (content.rating || '8.0'),
               ageRating: content.ageRating ? `${content.ageRating}+` : 'U/A 13+',
               description: banner.description || content.shortDescription || content.description || '',
               language: content.languages && content.languages.length > 0 ? 'Multi' : 'EN',
               badge: banner.type?.toUpperCase() || 'EXCLUSIVE',
               genres: (content.genres || []).map((g: any) => g?.name || g),
-              trailerUrl: resolveMediaUrl(content.trailerUrl || '') || null,
-              hlsUrl: stream,
-              videoUrl: stream,
+              trailerUrl: resolvedTrailer,
+              hlsUrl: stream || resolvedTrailer,
+              videoUrl: stream || resolvedTrailer,
               planRequired,
               isPremium: planRequired !== 'free',
               isLocked: locked,
@@ -190,6 +231,7 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
             };
           } else {
             // Banner without linked content
+            const bannerDirectTrailer = resolveMediaUrl(banner.trailerUrl || banner.videoUrl || '');
             return {
               id: banner._id.toString(),
               title: banner.title,
@@ -198,7 +240,7 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
               type: 'movie',
               contentType: 'movie',
               year: new Date(banner.createdAt).getFullYear().toString(),
-              duration: '120m',
+              duration: '',
               imdbRating: '8.0',
               ageRating: 'U/A 13+',
               description: banner.description || '',
@@ -207,6 +249,9 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
               genres: [],
               ctaLink: banner.ctaLink,
               ctaText: banner.ctaText,
+              trailerUrl: bannerDirectTrailer || null,
+              hlsUrl: bannerDirectTrailer || null,
+              videoUrl: bannerDirectTrailer || null,
               isBanner: true,
             };
           }
