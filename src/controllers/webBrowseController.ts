@@ -1,10 +1,14 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { Types } from 'mongoose';
 import { MovieModel } from '../models/Movie';
+import { TVShowModel } from '../models/TVShow';
+import { SectionModel } from '../models/Section';
 import { GenreModel } from '../models/Genre';
 import { logger } from '../lib/logger';
 
 // Standardized mapping for website ContentItem
 const mapContentItem = (item: any) => {
+  const isShow = item.contentType === 'tvShow' || item._webKind === 'show' || item.totalSeasons != null;
   let badge;
   if (item.featured && item.trending) badge = 'EXCLUSIVE';
   else if (item.trending) badge = 'TRENDING';
@@ -17,8 +21,8 @@ const mapContentItem = (item: any) => {
     title: item.title,
     poster: item.posterImage || item.thumbnail || '',
     backdrop: item.bannerImage || item.thumbnail || '',
-    type: 'movie',
-    contentType: 'movie',
+    type: isShow ? 'show' : 'movie',
+    contentType: isShow ? 'tvShow' : 'movie',
     year: item.year?.toString() || new Date(item.createdAt).getFullYear().toString(),
     duration: item.duration ? `${item.duration}m` : '120m',
     imdbRating: item.imdbRating?.toString() || (item.rating || '8.0'),
@@ -81,6 +85,105 @@ export const getWebBrowse = async (request: FastifyRequest, reply: FastifyReply)
           data: { items: [], pagination: { total: 0, page, limit, totalPages: 0 } },
         });
       }
+    }
+
+    if (section && section !== 'trending' && section !== 'new' && section !== 'top-rated') {
+      const sectionMatch = Types.ObjectId.isValid(section)
+        ? { $or: [{ _id: new Types.ObjectId(section) }, { key: section }] }
+        : { key: section };
+      const configuredSection = await SectionModel.findOne({
+        ...sectionMatch,
+        isActive: true,
+        $and: [{
+          $or: [
+            { platform: 'web' },
+            { platform: 'all' },
+            { platform: { $exists: false } },
+          ],
+        }],
+      }).lean();
+
+      if (!configuredSection) {
+        return reply.send({
+          success: true,
+          data: { items: [], sectionTitle: '', pagination: { total: 0, page, limit, totalPages: 0 } },
+        });
+      }
+
+      const sectionFilter: any = { ...(configuredSection.filter || {}) };
+      delete sectionFilter.mediaType;
+      if (typeof sectionFilter.genres === 'string' && !Types.ObjectId.isValid(sectionFilter.genres)) {
+        const sectionGenre = await GenreModel.findOne({
+          name: { $regex: new RegExp(`^${sectionFilter.genres}$`, 'i') },
+        }).select('_id').lean();
+        if (!sectionGenre) {
+          return reply.send({
+            success: true,
+            data: { items: [], sectionTitle: configuredSection.title, pagination: { total: 0, page, limit, totalPages: 0 } },
+          });
+        }
+        sectionFilter.genres = sectionGenre._id;
+      }
+
+      const manualIds = (configuredSection.manualContentIds || []).filter((id: any) => Types.ObjectId.isValid(String(id)));
+      const selection = configuredSection.contentSelection || 'dynamic';
+      const dynamicQuery = { $and: [filter, sectionFilter] };
+      const manualQuery = { $and: [filter, { _id: { $in: manualIds } }] };
+      const sectionQuery = selection === 'manual'
+        ? manualQuery
+        : selection === 'mixed' && manualIds.length > 0
+          ? { $or: [dynamicQuery, manualQuery] }
+          : dynamicQuery;
+
+      const contentType = configuredSection.contentType;
+      const contentModels: { model: any; isShow: boolean }[] = contentType === 'movie'
+        ? [{ model: MovieModel, isShow: false }]
+        : contentType === 'mixed'
+          ? [{ model: MovieModel, isShow: false }, { model: TVShowModel, isShow: true }]
+          : [{ model: TVShowModel, isShow: true }];
+      const sectionSort = configuredSection.sortBy && Object.keys(configuredSection.sortBy).length
+        ? configuredSection.sortBy
+        : { createdAt: -1 };
+      const fetchCount = skip + limit;
+      const batches = await Promise.all(contentModels.map(async ({ model, isShow }) => {
+        const [items, total] = await Promise.all([
+          model.find(sectionQuery)
+            .sort(sectionSort)
+            .limit(fetchCount)
+            .populate('genres', 'name')
+            .lean(),
+          model.countDocuments(sectionQuery),
+        ]);
+        return { items: items.map((item: any) => ({ ...item, contentType: isShow ? 'tvShow' : 'movie' })), total };
+      }));
+
+      const allItems = batches.flatMap((batch) => batch.items);
+      const sortEntries = Object.entries(sectionSort) as [string, number][];
+      allItems.sort((a: any, b: any) => {
+        for (const [field, direction] of sortEntries) {
+          if (a[field] === b[field]) continue;
+          if (a[field] == null) return 1;
+          if (b[field] == null) return -1;
+          return (a[field] < b[field] ? -1 : 1) * direction;
+        }
+        return 0;
+      });
+
+      const uniqueItems = allItems.filter((item: any, index: number, items: any[]) =>
+        items.findIndex((candidate) => String(candidate._id) === String(item._id)) === index
+      );
+      const items = uniqueItems.slice(skip, skip + limit).map(mapContentItem);
+      const total = batches.reduce((sum, batch) => sum + batch.total, 0);
+      const responseData = {
+        success: true,
+        data: {
+          items,
+          sectionTitle: configuredSection.title,
+          pagination: { total, page, limit, totalPages: Math.ceil(total / limit) },
+        },
+      };
+      browseCache.set(cacheKey, { time: Date.now(), data: responseData });
+      return reply.send(responseData);
     }
 
     let sort: any = { createdAt: -1 };
