@@ -216,6 +216,7 @@ export interface PresignedUrlResult {
   uploadUrl: string;
   publicUrl: string;
   key: string;
+  headers?: Record<string, string>;
 }
 
 export async function generatePresignedUrl(
@@ -234,23 +235,40 @@ export async function generatePresignedUrl(
   }
 
   const s3Client = await getS3Client();
+  const isSpaces = settings.storageDriver === 'spaces';
   const command = new PutObjectCommand({
     Bucket: settings.bucket,
     Key: key,
     ContentType: contentType || 'application/octet-stream',
+    ...(isSpaces ? { ACL: 'public-read' as const } : {}),
   });
 
-  // Only sign content-type so browser XHR PUT matches the signature
+  const signableHeaders = new Set(['content-type', ...(isSpaces ? ['x-amz-acl'] : [])]);
   const uploadUrl = await getSignedUrl(s3Client, command, {
     expiresIn,
-    signableHeaders: new Set(['content-type']),
+    signableHeaders,
   });
 
   return {
     uploadUrl,
     publicUrl: buildPublicUrl(settings, key),
     key,
+    ...(isSpaces ? { headers: { 'x-amz-acl': 'public-read' } } : {}),
   };
+}
+
+export async function getSignedObjectUrl(key: string, expiresIn = 604800): Promise<string> {
+  const settings = await getS3Settings();
+  if (!settings.accessKeyId || !settings.secretAccessKey) {
+    throw new Error('Remote storage credentials are not configured');
+  }
+
+  const s3Client = await getS3Client();
+  return getSignedUrl(
+    s3Client,
+    new GetObjectCommand({ Bucket: settings.bucket, Key: key }),
+    { expiresIn }
+  );
 }
 
 export async function uploadToS3(

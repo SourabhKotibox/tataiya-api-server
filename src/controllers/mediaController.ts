@@ -616,6 +616,7 @@ export const presignMediaUpload = async (request: FastifyRequest, reply: Fastify
       data: {
         uploadUrl: signed.uploadUrl,
         publicUrl: signed.publicUrl,
+        headers: signed.headers || {},
         key,
         folderId,
         fileName: uniqueName,

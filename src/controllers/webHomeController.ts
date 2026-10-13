@@ -5,6 +5,7 @@ import { GenreModel } from '../models/Genre';
 import { BannerModel } from '../models/Banner';
 import { logger } from '../lib/logger';
 import { isContentLocked } from '../lib/subscriptionAccess';
+import { getSignedObjectUrl } from '../lib/s3';
 
 const S3_PUBLIC_BASE =
   (process.env.AWS_S3_PUBLIC_BASE_URL || 'https://tatiyatv.s3.eu-north-1.amazonaws.com').replace(/\/$/, '');
@@ -29,6 +30,23 @@ const resolveMediaUrl = (value?: string | null): string => {
   // Bare S3 key e.g. media/folder/file.jpg
   if (value.startsWith('media/')) return `${S3_PUBLIC_BASE}/${value}`;
   return value;
+};
+
+const resolveBannerMediaUrl = async (value?: string | null): Promise<string | null> => {
+  if (!value) return null;
+  let pathname = value;
+  try {
+    pathname = new URL(value).pathname;
+  } catch {}
+  const mediaKey = pathname.match(/(?:^|\/)(media\/[^?#]+)/)?.[1];
+  if (mediaKey) {
+    try {
+      return await getSignedObjectUrl(decodeURIComponent(mediaKey));
+    } catch (error) {
+      logger.warn({ error, mediaKey }, 'Unable to sign banner media URL; using its public URL');
+    }
+  }
+  return resolveMediaUrl(value) || null;
 };
 
 const formatDuration = (duration: any): string => {
@@ -189,7 +207,7 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
           }
         }
 
-        return bannersRaw.map((banner: any) => {
+        return Promise.all(bannersRaw.map(async (banner: any) => {
           const content = banner.contentId ? contentMap.get(banner.contentId.toString()) : null;
           const bannerImage = resolveMediaUrl(banner.imageUrl || '');
           if (content) {
@@ -197,12 +215,12 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
             const locked = isContentLocked(planRequired, 'free');
             const isShow = content.contentType === 'tvShow';
             const ep = isShow ? showEpisodeMap.get(content._id.toString()) : null;
-            const showTrailer = content.trailerUrl || banner.trailerUrl || banner.videoUrl || ep?.trailerUrl || null;
+            const showTrailer = banner.trailerUrl || content.trailerUrl || ep?.trailerUrl || null;
             const epVideo = ep?.hlsUrl || ep?.videoUrl || ep?.sourceVideoUrl || null;
             const contentVideo = content.hlsUrl || content.videoUrl || content.sourceVideoUrl || null;
             const playableStream = epVideo || contentVideo || null;
-            const stream = locked ? null : (resolveMediaUrl(playableStream || '') || null);
-            const resolvedTrailer = resolveMediaUrl(showTrailer || '') || stream || null;
+            const stream = locked ? null : await resolveBannerMediaUrl(playableStream);
+            const resolvedTrailer = await resolveBannerMediaUrl(showTrailer);
 
             return {
               id: content._id.toString(),
@@ -222,8 +240,8 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
               badge: banner.type?.toUpperCase() || 'EXCLUSIVE',
               genres: (content.genres || []).map((g: any) => g?.name || g),
               trailerUrl: resolvedTrailer,
-              hlsUrl: stream || resolvedTrailer,
-              videoUrl: stream || resolvedTrailer,
+              hlsUrl: stream,
+              videoUrl: stream,
               planRequired,
               isPremium: planRequired !== 'free',
               isLocked: locked,
@@ -232,7 +250,8 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
             };
           } else {
             // Banner without linked content
-            const bannerDirectTrailer = resolveMediaUrl(banner.trailerUrl || banner.videoUrl || '');
+            const bannerDirectTrailer = await resolveBannerMediaUrl(banner.trailerUrl);
+            const bannerDirectVideo = await resolveBannerMediaUrl(banner.videoUrl);
             return {
               id: banner._id.toString(),
               title: banner.title,
@@ -251,12 +270,12 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
               ctaLink: banner.ctaLink,
               ctaText: banner.ctaText,
               trailerUrl: bannerDirectTrailer || null,
-              hlsUrl: bannerDirectTrailer || null,
-              videoUrl: bannerDirectTrailer || null,
+              hlsUrl: bannerDirectVideo || bannerDirectTrailer || null,
+              videoUrl: bannerDirectVideo || bannerDirectTrailer || null,
               isBanner: true,
             };
           }
-        });
+        }));
       })(),
       // 1: Trending TV Shows
       TVShowModel.find({ status: 'published', trending: true }).sort({ views: -1, createdAt: -1 }).select(selectFields).limit(20).populate('genres', 'name').lean(),
@@ -326,11 +345,7 @@ export const getWebHome = async (request: FastifyRequest, reply: FastifyReply) =
     const withVideo = heroContent.filter((h: any) => h.trailerUrl || h.hlsUrl || h.videoUrl);
 
     if (bannerSlides.length > 0) {
-      const ids = new Set(bannerSlides.map((h: any) => h.id));
-      heroContent = [
-        ...bannerSlides,
-        ...playablePool.filter((m: any) => !ids.has(m.id)).slice(0, Math.max(0, 8 - bannerSlides.length)),
-      ];
+      heroContent = bannerSlides;
     } else if (withVideo.length === 0 && playablePool.length > 0) {
       heroContent = playablePool.slice(0, 8);
     } else if (withVideo.length < 3 && playablePool.length > 0) {
