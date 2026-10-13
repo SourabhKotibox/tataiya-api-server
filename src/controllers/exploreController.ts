@@ -13,6 +13,7 @@ import {
   resolveEffectiveUserPlan,
 } from '../lib/subscriptionAccess';
 import { buildShareUrl } from '../lib/config';
+import { calculateEpisodeStartSeconds } from '../lib/videoPreview';
 
 // How many extra items to fetch per page to survive deduplication filtering
 const FETCH_MULTIPLIER = 4;
@@ -56,10 +57,16 @@ const mapContentItem = (
   episodeTrailerUrl: string | null = null,
   episodeVideoUrl: string | null = null,
   isWishlisted = false,
+  episodeDuration?: number,
+  episodeStartSeconds?: number,
 ) => {
   const contentPlan = item.planRequired || item.plan || 'free';
   const locked = isContentLocked(contentPlan, userPlan);
   const accessible = canAccessContent(contentPlan, userPlan);
+
+  const hasDirectTrailer = !!item.trailerUrl;
+  const hasEpisodeTrailer = !!episodeTrailerUrl;
+  const hasAnyTrailer = hasDirectTrailer || hasEpisodeTrailer;
 
   const rawTrailer = item.trailerUrl || episodeTrailerUrl;
   const rawVideo = item.hlsUrl || episodeVideoUrl;
@@ -69,6 +76,17 @@ const mapContentItem = (
   const effectiveTrailerUrl = trailerUrl || toAbsoluteUrl(request, rawVideo) || null;
   const fullVideoUrl = accessible ? (toAbsoluteUrl(request, rawVideo) || null) : null;
   const playableUrl = effectiveTrailerUrl || fullVideoUrl || null;
+
+  // If trailer is missing and we run Episode 1, start 5-10 minutes from mid (300-600s)
+  const isEpisodePreview = !hasAnyTrailer && !!effectiveTrailerUrl;
+  let startSeconds = 0;
+  if (isEpisodePreview) {
+    if (episodeStartSeconds && episodeStartSeconds > 0) {
+      startSeconds = episodeStartSeconds;
+    } else {
+      startSeconds = calculateEpisodeStartSeconds(episodeDuration || item.duration);
+    }
+  }
 
   return {
     id: item._id.toString(),
@@ -94,7 +112,7 @@ const mapContentItem = (
     is_wishlist: isWishlisted,
     is_wishlisted: isWishlisted,
     shares: item.shares || 0,
-    shareUrl: buildShareUrl(item._id.toString(), type === "show" ? "show" : "movie"),
+    shareUrl: buildShareUrl(item._id.toString(), type === 'show' ? 'show' : 'movie'),
     featured: item.featured,
     trending: item.trending,
     isNewContent: item.isNewContent,
@@ -108,6 +126,14 @@ const mapContentItem = (
     trailerUrl: effectiveTrailerUrl,
     streamUrl: playableUrl,
     hlsUrl: playableUrl,
+    startSeconds,
+    startAt: startSeconds,
+    startTime: startSeconds,
+    seekTo: startSeconds,
+    sourceStartSeconds: startSeconds,
+    previewStartTime: startSeconds,
+    previewStartSeconds: startSeconds,
+    isEpisodePreview,
     contentPlan,
     planRequired: contentPlan,
     isLocked: locked,
@@ -264,7 +290,7 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
         tvShowId: { $in: showIds },
       })
         .sort({ season: 1, episode: 1 })
-        .select('tvShowId trailerUrl hlsUrl sourceVideoUrl isFree')
+        .select('tvShowId trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds isFree')
         .lean();
 
       for (const ep of firstEpisodes) {
@@ -305,7 +331,9 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
       const isShow = content._type === 'show';
       const epDoc = isShow ? episodesMap.get(cid) : null;
       const epTrailer = epDoc?.trailerUrl || null;
-      const epVideo = epDoc?.hlsUrl || epDoc?.sourceVideoUrl || null;
+      const epVideo = epDoc?.hlsUrl || epDoc?.sourceVideoUrl || epDoc?.videoUrl || null;
+      const epDuration = epDoc?.duration;
+      const epStartSeconds = epDoc?.sourceStartSeconds;
 
       return mapContentItem(
         request,
@@ -317,6 +345,8 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
         epTrailer,
         epVideo,
         isWishlisted,
+        epDuration,
+        epStartSeconds,
       );
     });
 

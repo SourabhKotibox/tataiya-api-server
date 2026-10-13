@@ -6,6 +6,7 @@ import { BannerModel } from '../models/Banner';
 import { MovieModel } from '../models/Movie';
 import { TVShowModel } from '../models/TVShow';
 import uploadHandler from '../lib/uploadHandler';
+import { calculateEpisodeStartSeconds } from '../lib/videoPreview';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -86,6 +87,7 @@ const mapContent = (content: any) => {
   const contentType = isShow ? 'tvShow' : 'movie';
   const trailerUrl = content.trailerUrl || null;
   const videoUrl = content.videoUrl || content.hlsUrl || null;
+  const startSeconds = content.startSeconds || 0;
   return {
     id: content._id.toString(),
     title: content.title,
@@ -108,6 +110,14 @@ const mapContent = (content: any) => {
     videoUrl,
     trailerUrl,
     streamUrl: trailerUrl || videoUrl,
+    startSeconds,
+    startAt: startSeconds,
+    startTime: startSeconds,
+    seekTo: startSeconds,
+    sourceStartSeconds: startSeconds,
+    previewStartTime: startSeconds,
+    previewStartSeconds: startSeconds,
+    isEpisodePreview: !!content.isEpisodePreview,
   };
 };
 
@@ -129,21 +139,40 @@ const populateBannersContent = async (banners: any[]) => {
     contentMap.set(show._id.toString(), { ...show, contentType: 'tvShow' });
   }
 
-  // Pre-fetch Episode 1 trailer for any TV shows missing trailerUrl
-  const showsNeedingTrailer = shows.filter((s) => !s.trailerUrl).map((s) => s._id);
-  if (showsNeedingTrailer.length > 0) {
+  // Pre-fetch Episode 1 trailer or video for TV shows
+  const showIds = shows.map((s) => s._id);
+  if (showIds.length > 0) {
     try {
       const { EpisodeModel } = await import('../models/Episode');
-      const firstEpisodes = await EpisodeModel.find({ tvShowId: { $in: showsNeedingTrailer } })
+      const firstEpisodes = await EpisodeModel.find({ tvShowId: { $in: showIds } })
         .sort({ season: 1, episode: 1 })
-        .select('tvShowId trailerUrl hlsUrl sourceVideoUrl')
+        .select('tvShowId trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds')
         .lean();
       for (const ep of firstEpisodes) {
         const sId = ep.tvShowId?.toString();
         if (sId && contentMap.has(sId)) {
           const show = contentMap.get(sId);
-          if (!show.trailerUrl) {
-            show.trailerUrl = ep.trailerUrl || ep.hlsUrl || ep.sourceVideoUrl;
+          const hasShowTrailer = !!show.trailerUrl;
+          const hasEpTrailer = !!ep.trailerUrl;
+          const epVideo = ep.hlsUrl || ep.sourceVideoUrl || ep.videoUrl;
+          const epDuration = ep.duration;
+          const epStart = ep.sourceStartSeconds || calculateEpisodeStartSeconds(epDuration);
+
+          if (!hasShowTrailer) {
+            if (hasEpTrailer) {
+              show.trailerUrl = ep.trailerUrl;
+              show.startSeconds = 0;
+            } else if (epVideo) {
+              show.trailerUrl = epVideo;
+              show.videoUrl = epVideo;
+              show.hlsUrl = epVideo;
+              show.startSeconds = epStart;
+              show.isEpisodePreview = true;
+            }
+          }
+          if (!show.videoUrl && epVideo) {
+            show.videoUrl = epVideo;
+            show.hlsUrl = epVideo;
           }
         }
       }
@@ -159,7 +188,11 @@ const populateBannersContent = async (banners: any[]) => {
       banner.contentId = c;
       if (c) {
         if (!banner.trailerUrl) banner.trailerUrl = c.trailerUrl;
-        if (!banner.videoUrl) banner.videoUrl = c.hlsUrl || c.videoUrl;
+        if (!banner.videoUrl) banner.videoUrl = c.videoUrl || c.hlsUrl;
+        if (c.startSeconds !== undefined && (!banner.startSeconds || banner.startSeconds === 0)) {
+          banner.startSeconds = c.startSeconds;
+        }
+        if (c.isEpisodePreview) banner.isEpisodePreview = true;
       }
     }
   }
@@ -194,6 +227,7 @@ const mapBanner = (banner: any) => {
   const thumbnail = content?.thumbnail || banner.imageUrl;
   const trailerUrl = banner.trailerUrl || content?.trailerUrl || null;
   const videoUrl = banner.videoUrl || content?.hlsUrl || content?.videoUrl || null;
+  const startSeconds = banner.startSeconds || content?.startSeconds || 0;
   return {
     id: banner._id.toString(),
     title: banner.title,
@@ -205,6 +239,14 @@ const mapBanner = (banner: any) => {
     videoUrl: trailerUrl || videoUrl,
     streamUrl: trailerUrl || videoUrl,
     hlsUrl: trailerUrl || videoUrl,
+    startSeconds,
+    startAt: startSeconds,
+    startTime: startSeconds,
+    seekTo: startSeconds,
+    sourceStartSeconds: startSeconds,
+    previewStartTime: startSeconds,
+    previewStartSeconds: startSeconds,
+    isEpisodePreview: !!(banner.isEpisodePreview || content?.isEpisodePreview),
     ctaText: banner.ctaText,
     ctaLink: banner.ctaLink,
     position: banner.position,
@@ -348,17 +390,26 @@ export const createBannerFromContent = async (request: FastifyRequest, reply: Fa
       return reply.status(404).send({ success: false, message: 'Source content not found' });
     }
 
-    // If source TV show has no trailerUrl, lookup Episode 1 trailer
+    // If source TV show has no trailerUrl, lookup Episode 1 trailer or video
     let resolvedTrailerUrl = source.trailerUrl;
+    let resolvedStartSeconds = 0;
+    let isEpisodePreview = false;
     if (!resolvedTrailerUrl && contentType === 'tvShow') {
       try {
         const { EpisodeModel } = await import('../models/Episode');
         const ep1 = await EpisodeModel.findOne({ tvShowId: source._id })
           .sort({ season: 1, episode: 1 })
-          .select('trailerUrl hlsUrl sourceVideoUrl')
+          .select('trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds')
           .lean();
         if (ep1) {
-          resolvedTrailerUrl = ep1.trailerUrl || ep1.hlsUrl || ep1.sourceVideoUrl;
+          if (ep1.trailerUrl) {
+            resolvedTrailerUrl = ep1.trailerUrl;
+            resolvedStartSeconds = 0;
+          } else {
+            resolvedTrailerUrl = ep1.hlsUrl || ep1.sourceVideoUrl || ep1.videoUrl;
+            resolvedStartSeconds = ep1.sourceStartSeconds || calculateEpisodeStartSeconds(ep1.duration);
+            isEpisodePreview = true;
+          }
         }
       } catch {}
     }
@@ -382,6 +433,8 @@ export const createBannerFromContent = async (request: FastifyRequest, reply: Fa
       existing.imageUrl = thumbnail;
       existing.trailerUrl = resolvedTrailerUrl || existing.trailerUrl;
       existing.videoUrl = videoUrl || existing.videoUrl;
+      existing.startSeconds = resolvedStartSeconds || existing.startSeconds || 0;
+      existing.isEpisodePreview = isEpisodePreview || existing.isEpisodePreview || false;
       existing.ctaText = body.ctaText || existing.ctaText || 'Watch Now';
       existing.ctaLink = body.ctaLink || existing.ctaLink || '';
       existing.isActive = body.isActive ?? true;
@@ -409,6 +462,8 @@ export const createBannerFromContent = async (request: FastifyRequest, reply: Fa
       imageUrl: thumbnail,
       trailerUrl: resolvedTrailerUrl || undefined,
       videoUrl,
+      startSeconds: resolvedStartSeconds,
+      isEpisodePreview,
       ctaText: body.ctaText || 'Watch Now',
       ctaLink: body.ctaLink || '',
       contentId: body.contentId,
@@ -449,6 +504,8 @@ export const createBanner = async (request: FastifyRequest, reply: FastifyReply)
     // If content is linked, verify it exists (TV show or Movie)
     let linkedTrailerUrl: string | undefined;
     let linkedVideoUrl: string | undefined;
+    let linkedStartSeconds = 0;
+    let linkedIsEpisodePreview = false;
     let linkedContentType: 'tvShow' | 'movie' = 'tvShow';
 
     if (data.contentId) {
@@ -462,9 +519,18 @@ export const createBanner = async (request: FastifyRequest, reply: FastifyReply)
             const { EpisodeModel } = await import('../models/Episode');
             const ep1 = await EpisodeModel.findOne({ tvShowId: show._id })
               .sort({ season: 1, episode: 1 })
-              .select('trailerUrl hlsUrl sourceVideoUrl')
+              .select('trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds')
               .lean();
-            if (ep1) linkedTrailerUrl = ep1.trailerUrl || ep1.hlsUrl || ep1.sourceVideoUrl;
+            if (ep1) {
+              if (ep1.trailerUrl) {
+                linkedTrailerUrl = ep1.trailerUrl;
+                linkedStartSeconds = 0;
+              } else {
+                linkedTrailerUrl = ep1.hlsUrl || ep1.sourceVideoUrl || ep1.videoUrl;
+                linkedStartSeconds = ep1.sourceStartSeconds || calculateEpisodeStartSeconds(ep1.duration);
+                linkedIsEpisodePreview = true;
+              }
+            }
           } catch {}
         }
       } else {
@@ -487,6 +553,8 @@ export const createBanner = async (request: FastifyRequest, reply: FastifyReply)
       imageUrl: thumbnail,
       trailerUrl: linkedTrailerUrl,
       videoUrl: linkedVideoUrl,
+      startSeconds: linkedStartSeconds,
+      isEpisodePreview: linkedIsEpisodePreview,
       ctaText: data.ctaText || 'Watch Now',
       ctaLink: data.ctaLink,
       contentId: data.contentId || undefined,

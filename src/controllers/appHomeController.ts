@@ -13,9 +13,9 @@ import { SubscriptionModel } from '../models/Subscription';
 import { logger } from '../lib/logger';
 import mongoose from 'mongoose';
 
-// Base URL for the backend API (used for smart share links)
 import { buildShareUrl } from '../lib/config';
 import { normalizePlanKey } from './subscriptionController';
+import { calculateEpisodeStartSeconds } from '../lib/videoPreview';
 
 // ── URL Resolver ─────────────────────────────────────────────────────────────
 // Converts any stored path/key to a proper full URL:
@@ -93,6 +93,7 @@ const mapContentItem = (
   const trailerUrl = resolveUrl(item.trailerUrl || null);
   const videoUrl = resolveUrl(item.hlsUrl || item.videoUrl || null);
   const streamUrl = trailerUrl || videoUrl;
+  const startSeconds = item.startSeconds || 0;
 
   return {
     id: item._id.toString(),
@@ -134,6 +135,14 @@ const mapContentItem = (
     trailerUrl,
     streamUrl,
     hlsUrl: videoUrl || trailerUrl,
+    startSeconds,
+    startAt: startSeconds,
+    startTime: startSeconds,
+    seekTo: startSeconds,
+    sourceStartSeconds: startSeconds,
+    previewStartTime: startSeconds,
+    previewStartSeconds: startSeconds,
+    isEpisodePreview: !!item.isEpisodePreview,
     contentPlan: normalizePlanKey(contentPlanRaw) === 'free' ? 'standard' : contentPlanRaw,
     isLocked,
   };
@@ -156,21 +165,40 @@ const populateBannersContent = async (banners: any[]) => {
     contentMap.set(show._id.toString(), { ...show, type: 'tvShow', contentType: 'tvShow' });
   }
 
-  // Pre-fetch Episode 1 trailer for any TV shows missing trailerUrl
-  const showsNeedingTrailer = shows.filter((s) => !s.trailerUrl).map((s) => s._id);
-  if (showsNeedingTrailer.length > 0) {
+  // Pre-fetch Episode 1 trailer or video for TV shows
+  const showIds = shows.map((s) => s._id);
+  if (showIds.length > 0) {
     try {
       const { EpisodeModel } = await import('../models/Episode');
-      const firstEpisodes = await EpisodeModel.find({ tvShowId: { $in: showsNeedingTrailer } })
+      const firstEpisodes = await EpisodeModel.find({ tvShowId: { $in: showIds } })
         .sort({ season: 1, episode: 1 })
-        .select('tvShowId trailerUrl hlsUrl sourceVideoUrl')
+        .select('tvShowId trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds')
         .lean();
       for (const ep of firstEpisodes) {
         const sId = ep.tvShowId?.toString();
         if (sId && contentMap.has(sId)) {
           const show = contentMap.get(sId);
-          if (!show.trailerUrl) {
-            show.trailerUrl = ep.trailerUrl || ep.hlsUrl || ep.sourceVideoUrl;
+          const hasShowTrailer = !!show.trailerUrl;
+          const hasEpTrailer = !!ep.trailerUrl;
+          const epVideo = ep.hlsUrl || ep.sourceVideoUrl || ep.videoUrl;
+          const epDuration = ep.duration;
+          const epStart = ep.sourceStartSeconds || calculateEpisodeStartSeconds(epDuration);
+
+          if (!hasShowTrailer) {
+            if (hasEpTrailer) {
+              show.trailerUrl = ep.trailerUrl;
+              show.startSeconds = 0;
+            } else if (epVideo) {
+              show.trailerUrl = epVideo;
+              show.videoUrl = epVideo;
+              show.hlsUrl = epVideo;
+              show.startSeconds = epStart;
+              show.isEpisodePreview = true;
+            }
+          }
+          if (!show.videoUrl && epVideo) {
+            show.videoUrl = epVideo;
+            show.hlsUrl = epVideo;
           }
         }
       }
@@ -185,7 +213,11 @@ const populateBannersContent = async (banners: any[]) => {
       banner.contentId = c;
       if (c) {
         if (!banner.trailerUrl) banner.trailerUrl = c.trailerUrl;
-        if (!banner.videoUrl) banner.videoUrl = c.hlsUrl || c.videoUrl;
+        if (!banner.videoUrl) banner.videoUrl = c.videoUrl || c.hlsUrl;
+        if (c.startSeconds !== undefined && (!banner.startSeconds || banner.startSeconds === 0)) {
+          banner.startSeconds = c.startSeconds;
+        }
+        if (c.isEpisodePreview) banner.isEpisodePreview = true;
       }
     }
   }
@@ -207,6 +239,7 @@ const mapBanner = (
   const trailerUrl = resolveUrl(banner.trailerUrl || content?.trailerUrl || null);
   const videoUrl = resolveUrl(banner.videoUrl || content?.hlsUrl || content?.videoUrl || null);
   const streamUrl = trailerUrl || videoUrl;
+  const startSeconds = banner.startSeconds || content?.startSeconds || 0;
 
   return {
     id: banner._id.toString(),
@@ -220,6 +253,14 @@ const mapBanner = (
     videoUrl: trailerUrl || videoUrl,
     streamUrl,
     hlsUrl: trailerUrl || videoUrl,
+    startSeconds,
+    startAt: startSeconds,
+    startTime: startSeconds,
+    seekTo: startSeconds,
+    sourceStartSeconds: startSeconds,
+    previewStartTime: startSeconds,
+    previewStartSeconds: startSeconds,
+    isEpisodePreview: !!(banner.isEpisodePreview || content?.isEpisodePreview),
     ctaText: banner.ctaText,
     ctaLink: banner.ctaLink,
     contentId: banner.contentId?._id?.toString(),

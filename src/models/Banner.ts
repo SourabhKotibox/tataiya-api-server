@@ -8,6 +8,8 @@ export interface IBanner extends Document {
   mobileImageUrl?: string;
   trailerUrl?: string;
   videoUrl?: string;
+  startSeconds?: number;
+  isEpisodePreview?: boolean;
   ctaText: string;
   ctaLink?: string;
   contentId?: Types.ObjectId;
@@ -35,6 +37,8 @@ const BannerSchema = new Schema<IBanner>(
     mobileImageUrl: String,
     trailerUrl: String,
     videoUrl: String,
+    startSeconds: { type: Number, default: 0 },
+    isEpisodePreview: { type: Boolean, default: false },
     ctaText: { type: String, default: 'Watch Now' },
     ctaLink: String,
     contentId: { type: Schema.Types.ObjectId, ref: 'Content' },
