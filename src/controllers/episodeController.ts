@@ -25,7 +25,14 @@ export const getAllEpisodes = async (request: FastifyRequest, reply: FastifyRepl
 
     const filter: any = {};
     if (query.tvShowId) {
-      filter.tvShowId = query.tvShowId;
+      if (Types.ObjectId.isValid(query.tvShowId)) {
+        filter.$or = [
+          { tvShowId: new Types.ObjectId(query.tvShowId) },
+          { tvShowId: query.tvShowId },
+        ];
+      } else {
+        filter.tvShowId = query.tvShowId;
+      }
     } else {
       const typeFilter = query.contentType || query.TVShowType;
       if (typeFilter) {
