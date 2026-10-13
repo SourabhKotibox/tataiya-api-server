@@ -112,6 +112,12 @@ export const getWebBrowse = async (request: FastifyRequest, reply: FastifyReply)
 
       const sectionFilter: any = { ...(configuredSection.filter || {}) };
       delete sectionFilter.mediaType;
+      const sectionName = `${configuredSection.title} ${configuredSection.category} ${configuredSection.key}`.toLowerCase();
+      const isNewContentSection = /\b(new|latest|recent|launched)\b/.test(sectionName);
+      if (isNewContentSection && sectionFilter.trending === true && sectionFilter.isNewContent !== true) {
+        delete sectionFilter.trending;
+        sectionFilter.isNewContent = true;
+      }
       if (typeof sectionFilter.genres === 'string' && !Types.ObjectId.isValid(sectionFilter.genres)) {
         const sectionGenre = await GenreModel.findOne({
           name: { $regex: new RegExp(`^${sectionFilter.genres}$`, 'i') },
