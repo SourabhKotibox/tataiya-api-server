@@ -10,6 +10,7 @@ export interface IEpisode extends Document {
   description?: string;
   thumbnail?: string;
   sourceVideoUrl?: string;
+  sourceVideoKey?: string;
   videoUrl?: string;
   sourceStartSeconds?: number;
   sourceEndSeconds?: number;
@@ -48,6 +49,7 @@ const EpisodeSchema = new Schema<IEpisode>(
     description: String,
     thumbnail: String,
     sourceVideoUrl: String,
+    sourceVideoKey: String,
     videoUrl: String,
     sourceStartSeconds: Number,
     sourceEndSeconds: Number,

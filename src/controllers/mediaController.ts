@@ -573,13 +573,10 @@ export const presignMediaUpload = async (request: FastifyRequest, reply: Fastify
       return reply.status(400).send({ success: false, error: 'fileName and contentType are required' });
     }
 
-    const { isS3Configured, generatePresignedUrl, getS3Settings } = await import('../lib/s3');
-    const storageSettings = await getS3Settings();
-    if (body.source === 'episodes' && storageSettings.storageDriver !== 'spaces') {
-      return reply.status(400).send({
-        success: false,
-        error: 'Episode video uploads require DigitalOcean Spaces storage.',
-      });
+    const { isS3Configured, generatePresignedUrl, requireSpacesSettings } = await import('../lib/s3');
+    const isVideo = (body.contentType || '').startsWith('video/') || /\.(mp4|webm|mov|mkv|avi|m4v)$/i.test(body.fileName);
+    if (isVideo) {
+      await requireSpacesSettings();
     }
     if (!(await isS3Configured())) {
       return reply.status(400).send({
@@ -654,9 +651,16 @@ export const confirmS3MediaUpload = async (request: FastifyRequest, reply: Fasti
       (body.contentType || '').startsWith('video/') ||
       /\.(mp4|webm|mov|mkv|avi|m4v)$/i.test(body.originalName || body.fileName || '');
 
-    const { getS3Settings } = await import('../lib/s3');
+    const { getS3Settings, getS3ObjectSize, deleteFromS3, requireSpacesSettings } = await import('../lib/s3');
     const s3Settings = await getS3Settings();
     const activeStorageType = s3Settings.storageDriver === 'spaces' ? 'spaces' : 's3';
+    if (isVideo) {
+      await requireSpacesSettings();
+      const remoteSize = await getS3ObjectSize(body.key);
+      if (remoteSize <= 0 || (Number(body.fileSize) > 0 && remoteSize !== Number(body.fileSize))) {
+        return reply.status(400).send({ success: false, error: `Spaces upload verification failed (${remoteSize}/${Number(body.fileSize) || 0} bytes).` });
+      }
+    }
 
     const createPayload: Record<string, any> = {
       name: body.originalName || body.fileName || path.basename(body.key),
@@ -666,23 +670,23 @@ export const confirmS3MediaUpload = async (request: FastifyRequest, reply: Fasti
       fileType: body.contentType || 'application/octet-stream',
       folder: new Types.ObjectId(body.folderId),
       source: body.source || 'media-library',
-      storageType: activeStorageType,
+      storageType: isVideo ? 'spaces' : activeStorageType,
       s3Key: body.key,
     };
-    if (isVideo && body.source !== 'episodes') createPayload.hlsStatus = 'processing';
+    if (isVideo && body.source !== 'episodes') createPayload.hlsStatus = 'pending';
 
-    const mediaFile = await MediaFileModel.create(createPayload);
+    let mediaFile;
+    try {
+      mediaFile = await MediaFileModel.create(createPayload);
+    } catch (error) {
+      if (isVideo) await deleteFromS3(body.key).catch((cleanupError) => logger.error({ cleanupError, key: body.key }, 'Failed to clean up unregistered video upload'));
+      throw error;
+    }
 
     if (isVideo && body.source !== 'episodes') {
       const { transcodeToHls } = await import('../lib/hlsTranscoder');
-      const protocol = request.protocol;
-      const host = request.headers.host;
-      const baseUrl = `${protocol}://${host}`;
-      // Fire-and-forget — never block the upload response on HLS
-      setImmediate(() => {
-        transcodeToHls(mediaFile._id.toString(), '', baseUrl, activeStorageType).catch((err) => {
-          logger.error({ err, mediaFileId: mediaFile._id }, 'Failed to transcode video to HLS after direct remote upload');
-        });
+      void transcodeToHls(mediaFile._id.toString(), body.key, '', 'spaces').catch((err) => {
+        logger.error({ err, mediaFileId: mediaFile._id }, 'Failed to enqueue confirmed Spaces video for HLS');
       });
     }
 

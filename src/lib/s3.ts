@@ -1,11 +1,14 @@
-import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand, DeleteObjectsCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command, ListMultipartUploadsCommand, AbortMultipartUploadCommand } from '@aws-sdk/client-s3';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'node:url';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Upload } from '@aws-sdk/lib-storage';
 import { Readable } from 'stream';
 import { logger } from './logger';
 import { SettingsModel } from '../models/Settings';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Normalizes a DigitalOcean Spaces endpoint to the regional S3 base endpoint.
@@ -72,39 +75,39 @@ export function normalizeSpacesEndpoint(
 export async function getS3Settings() {
   const settings = await SettingsModel.findOne().lean();
   const storageDriver =
-    (settings as any)?.storageDriver ||
     process.env.STORAGE_DRIVER ||
+    (settings as any)?.storageDriver ||
     's3';
 
   if (storageDriver === 'spaces') {
     const accessKeyId =
-      (settings as any)?.doAccessKey ||
       process.env.DO_SPACES_ACCESS_KEY ||
+      (settings as any)?.doAccessKey ||
       process.env.DO_SPACES_KEY ||
       '';
     const secretAccessKey =
-      (settings as any)?.doSecretKey ||
       process.env.DO_SPACES_SECRET_KEY ||
+      (settings as any)?.doSecretKey ||
       process.env.DO_SPACES_SECRET ||
       '';
     const region = (
-      (settings as any)?.doRegion ||
       process.env.DO_SPACES_REGION ||
+      (settings as any)?.doRegion ||
       'nyc3'
     ).trim().toLowerCase();
     const bucket = (
-      (settings as any)?.doSpaceName ||
       process.env.DO_SPACES_NAME ||
+      (settings as any)?.doSpaceName ||
       process.env.DO_SPACES_BUCKET ||
       ''
     ).trim();
     const rawEndpoint =
-      (settings as any)?.doEndpoint ||
       process.env.DO_SPACES_ENDPOINT ||
+      (settings as any)?.doEndpoint ||
       `https://${region}.digitaloceanspaces.com`;
     const endpoint = normalizeSpacesEndpoint(rawEndpoint, region, bucket);
     const cdnUrl =
-      ((settings as any)?.doCdnUrl || process.env.DO_SPACES_CDN_URL || '').replace(/\/$/, '');
+      (process.env.DO_SPACES_CDN_URL || (settings as any)?.doCdnUrl || '').replace(/\/$/, '');
 
     return {
       accessKeyId,
@@ -153,6 +156,21 @@ export async function getS3Settings() {
     storageDriver: storageDriver as 'local' | 's3' | 'spaces',
     cdnUrl,
   };
+}
+
+export async function requireSpacesSettings() {
+  const settings = await getS3Settings();
+  return assertSpacesConfigured(settings);
+}
+
+export function assertSpacesConfigured<T extends Awaited<ReturnType<typeof getS3Settings>>>(settings: T): T {
+  if (settings.storageDriver !== 'spaces') {
+    throw new Error('Video storage requires STORAGE_DRIVER=spaces; local and AWS S3 video fallbacks are disabled.');
+  }
+  if (!settings.bucket || !settings.accessKeyId || !settings.secretAccessKey) {
+    throw new Error('DigitalOcean Spaces is required for video storage but is missing a Space name or access credentials.');
+  }
+  return settings;
 }
 
 export async function getS3Client() {
@@ -298,7 +316,8 @@ export async function uploadToS3(
 export async function uploadReadableToS3(
   key: string,
   body: Readable,
-  contentType: string
+  contentType: string,
+  options: { cacheControl?: string } = {}
 ): Promise<string> {
   const settings = await getS3Settings();
   if (!settings.accessKeyId || !settings.secretAccessKey || (settings.storageDriver !== 's3' && settings.storageDriver !== 'spaces')) {
@@ -313,18 +332,153 @@ export async function uploadReadableToS3(
       Key: key,
       Body: body,
       ContentType: contentType,
+      ...(options.cacheControl ? { CacheControl: options.cacheControl } : {}),
       ...(settings.storageDriver === 'spaces' ? { ACL: 'public-read' as const } : {}),
     },
     partSize: 8 * 1024 * 1024,
     queueSize: 2,
     leavePartsOnError: false,
   });
+  let lastProgressLogAt = 0;
+  upload.on('httpUploadProgress', (progress) => {
+    const now = Date.now();
+    if (now - lastProgressLogAt < 5_000 && progress.loaded !== progress.total) return;
+    lastProgressLogAt = now;
+    logger.info({ key, loadedBytes: progress.loaded || 0, totalBytes: progress.total || 0 }, 'Spaces stream upload progress');
+  });
   await upload.done();
   return buildPublicUrl(settings, key);
 }
 
+export async function uploadVerifiedReadableToSpaces(
+  key: string,
+  body: Readable,
+  contentType: string,
+  expectedSize: number,
+  dependencies: {
+    upload?: typeof uploadReadableToS3;
+    getSize?: typeof getS3ObjectSize;
+    remove?: typeof deleteFromS3;
+  } = {}
+): Promise<string> {
+  const upload = dependencies.upload || uploadReadableToS3;
+  const getSize = dependencies.getSize || getS3ObjectSize;
+  const remove = dependencies.remove || deleteFromS3;
+  const url = await upload(key, body, contentType, { cacheControl: 'public, max-age=31536000, immutable' });
+  const actualSize = await getSize(key);
+  if (actualSize <= 0 || (expectedSize > 0 && actualSize !== expectedSize)) {
+    await remove(key).catch((error) => logger.error({ error, key }, 'Failed to remove incomplete original upload'));
+    throw new Error(`Spaces source verification failed for ${key}: uploaded ${actualSize} of ${expectedSize} bytes`);
+  }
+  return url;
+}
+
+export interface SpacesVideoSource {
+  key: string;
+  url: string;
+  size: number;
+  legacyLocalPath?: string;
+}
+
+export async function ensureVideoSourceInSpaces(
+  source: string,
+  entityType: string,
+  entityId: string,
+  knownKey?: string,
+  dependencies: {
+    settings?: Awaited<ReturnType<typeof getS3Settings>>;
+    head?: (key: string) => Promise<number>;
+    upload?: typeof uploadVerifiedReadableToSpaces;
+    fetch?: typeof fetch;
+    localUploadsRoot?: string;
+    publicUrl?: (key: string) => string;
+  } = {}
+): Promise<SpacesVideoSource> {
+  const settings = dependencies.settings ? assertSpacesConfigured(dependencies.settings) : await requireSpacesSettings();
+  const candidate = (knownKey || source || '').trim();
+  if (!candidate || /\.m3u8(?:[?#]|$)/i.test(candidate)) {
+    throw new Error('A source MP4/video file is required; HLS playlists are not original source files.');
+  }
+
+  const cdnHost = settings.cdnUrl ? new URL(settings.cdnUrl).host.toLowerCase() : '';
+  const spacesHost = `${settings.bucket}.${settings.endpoint?.replace(/^https?:\/\//, '').split('/')[0] || `${settings.region}.digitaloceanspaces.com`}`.toLowerCase();
+  let sourceKey = knownKey;
+  let externalUrl: URL | undefined;
+  try {
+    externalUrl = new URL(candidate);
+  } catch {}
+
+  if (externalUrl) {
+    const host = externalUrl.host.toLowerCase();
+    if (host === cdnHost || host === spacesHost) {
+      sourceKey = decodeURIComponent(externalUrl.pathname.replace(/^\/+/, ''));
+      if (sourceKey.startsWith(`${settings.bucket}/`)) sourceKey = sourceKey.slice(settings.bucket.length + 1);
+    }
+  } else if (!sourceKey && /^(?:uploads\/)?media\//.test(candidate.replace(/^\/+/, ''))) {
+    sourceKey = candidate.replace(/^\/+/, '').replace(/^uploads\//, '');
+  }
+
+  const client = dependencies.head ? undefined : await getS3Client();
+  if (sourceKey) {
+    const normalizedKey = sourceKey.replace(/^\/+/, '').replace(/^uploads\//, '');
+    try {
+      const size = dependencies.head
+        ? await dependencies.head(normalizedKey)
+        : Number((await client!.send(new HeadObjectCommand({ Bucket: settings.bucket, Key: normalizedKey }))).ContentLength) || 0;
+      return { key: normalizedKey, url: dependencies.publicUrl?.(normalizedKey) || buildPublicUrl(settings, normalizedKey), size };
+    } catch (error: any) {
+      if (externalUrl && (externalUrl.host.toLowerCase() === cdnHost || externalUrl.host.toLowerCase() === spacesHost)) throw error;
+    }
+  }
+
+  let body: Readable;
+  let size = 0;
+  let filename = 'source.mp4';
+  let legacyLocalPath: string | undefined;
+  const uploadsRoot = path.resolve(__dirname, '../../uploads');
+  const localRoot = path.resolve(dependencies.localUploadsRoot || uploadsRoot);
+  const linkedUploadPath = externalUrl?.pathname.match(/^\/uploads\/(.+)$/)?.[1];
+  const linkedLocalPath = linkedUploadPath ? path.resolve(localRoot, decodeURIComponent(linkedUploadPath)) : undefined;
+  const localCandidate = linkedLocalPath && linkedLocalPath.startsWith(`${localRoot}${path.sep}`) && fs.existsSync(linkedLocalPath)
+    ? linkedLocalPath
+    : undefined;
+  if (externalUrl) {
+    filename = path.basename(externalUrl.pathname) || filename;
+    if (localCandidate) {
+      const stat = await fs.promises.stat(localCandidate);
+      size = stat.size;
+      legacyLocalPath = localCandidate;
+      body = fs.createReadStream(localCandidate);
+    } else {
+      const response = await (dependencies.fetch || fetch)(externalUrl);
+      if (!response.ok || !response.body) throw new Error(`Unable to read legacy video source (${response.status})`);
+      size = Number(response.headers.get('content-length')) || 0;
+      body = Readable.fromWeb(response.body as any);
+    }
+  } else {
+    const relative = candidate.replace(/^\/*uploads\//, '').replace(/^\/+/, '');
+    const absolute = path.resolve(localRoot, relative);
+    if (!absolute.startsWith(`${localRoot}${path.sep}`) || !fs.existsSync(absolute) || !fs.statSync(absolute).isFile()) {
+      throw new Error(`Legacy source is not in Spaces and does not exist under the uploads directory: ${candidate}`);
+    }
+    const stat = await fs.promises.stat(absolute);
+    size = stat.size;
+    filename = path.basename(absolute);
+    body = fs.createReadStream(absolute);
+    legacyLocalPath = absolute;
+  }
+
+  const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '-');
+  const key = `media/originals/${entityType}/${entityId}/${safeName}`;
+  const ext = path.extname(safeName).toLowerCase();
+  const contentType = ext === '.webm' ? 'video/webm' : ext === '.mov' ? 'video/quicktime' : 'video/mp4';
+  const url = await (dependencies.upload || uploadVerifiedReadableToSpaces)(key, body, contentType, size);
+  const uploadedSize = size || await getS3ObjectSize(key);
+  return { key, url, size: uploadedSize, legacyLocalPath };
+}
+
 export async function downloadFromS3ToFile(s3Key: string, destPath: string): Promise<void> {
-  const settings = await getS3Settings();
+  const settings = await requireSpacesSettings();
   const s3Client = await getS3Client();
   const response = await s3Client.send(
     new GetObjectCommand({
@@ -336,13 +490,19 @@ export async function downloadFromS3ToFile(s3Key: string, destPath: string): Pro
 
   await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
   const body = response.Body as Readable;
-  await new Promise<void>((resolve, reject) => {
-    const write = fs.createWriteStream(destPath);
-    body.pipe(write);
-    write.on('finish', () => resolve());
-    write.on('error', reject);
-    body.on('error', reject);
-  });
+  try {
+    await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
+    await new Promise<void>((resolve, reject) => {
+      const write = fs.createWriteStream(destPath, { flags: 'wx' });
+      body.pipe(write);
+      write.on('finish', resolve);
+      write.on('error', reject);
+      body.on('error', reject);
+    });
+  } catch (error) {
+    await fs.promises.rm(destPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 /** Download only the first N bytes — enough for ffprobe without pulling multi‑GB files */
@@ -351,7 +511,7 @@ export async function downloadS3RangeToFile(
   destPath: string,
   maxBytes = 48 * 1024 * 1024
 ): Promise<void> {
-  const settings = await getS3Settings();
+  const settings = await requireSpacesSettings();
   const s3Client = await getS3Client();
   const response = await s3Client.send(
     new GetObjectCommand({
@@ -385,6 +545,64 @@ export async function deleteFromS3(key: string): Promise<void> {
       Key: key.replace(/^\/+/, '').replace(/^uploads\//, ''),
     })
   );
+}
+
+export async function deleteS3Prefix(prefix: string): Promise<number> {
+  const settings = await requireSpacesSettings();
+  const client = await getS3Client();
+  const normalizedPrefix = prefix.replace(/^\/+/, '').replace(/\/+$/, '') + '/';
+  let continuationToken: string | undefined;
+  let deleted = 0;
+
+  do {
+    const page = await client.send(new ListObjectsV2Command({
+      Bucket: settings.bucket,
+      Prefix: normalizedPrefix,
+      ContinuationToken: continuationToken,
+    }));
+    const objects = (page.Contents || []).flatMap((object) => object.Key ? [{ Key: object.Key }] : []);
+    if (objects.length) {
+      await client.send(new DeleteObjectsCommand({
+        Bucket: settings.bucket,
+        Delete: { Objects: objects, Quiet: true },
+      }));
+      deleted += objects.length;
+    }
+    continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (continuationToken);
+
+  return deleted;
+}
+
+export async function abortStaleSpacesMultipartUploads(olderThanMs = 24 * 60 * 60 * 1000): Promise<number> {
+  const settings = await requireSpacesSettings();
+  const client = await getS3Client();
+  const cutoff = Date.now() - olderThanMs;
+  let keyMarker: string | undefined;
+  let uploadIdMarker: string | undefined;
+  let aborted = 0;
+
+  do {
+    const page = await client.send(new ListMultipartUploadsCommand({
+      Bucket: settings.bucket,
+      KeyMarker: keyMarker,
+      UploadIdMarker: uploadIdMarker,
+    }));
+    for (const upload of page.Uploads || []) {
+      if (!upload.Key || !upload.UploadId || !upload.Initiated || upload.Initiated.getTime() > cutoff) continue;
+      try {
+        await client.send(new AbortMultipartUploadCommand({ Bucket: settings.bucket, Key: upload.Key, UploadId: upload.UploadId }));
+        aborted++;
+      } catch (error) {
+        logger.warn({ error, key: upload.Key, initiatedAt: upload.Initiated }, 'Failed to abort stale Spaces multipart upload');
+      }
+    }
+    keyMarker = page.IsTruncated ? page.NextKeyMarker : undefined;
+    uploadIdMarker = page.IsTruncated ? page.NextUploadIdMarker : undefined;
+  } while (keyMarker || uploadIdMarker);
+
+  if (aborted) logger.warn({ aborted, olderThanMs }, 'Aborted stale Spaces multipart uploads');
+  return aborted;
 }
 
 export async function isS3Configured(): Promise<boolean> {
@@ -421,52 +639,121 @@ export async function getHlsPublicBaseUrl(): Promise<string> {
   return `https://${settings.bucket}.s3.${settings.region}.amazonaws.com`;
 }
 
-export async function uploadHlsFolderToS3(localFolderPath: string, s3Prefix: string): Promise<number> {
-  const settings = await getS3Settings();
-  if (!settings.accessKeyId || !settings.secretAccessKey || (settings.storageDriver !== 's3' && settings.storageDriver !== 'spaces')) {
-    throw new Error('Remote storage is not configured — cannot upload HLS folder');
-  }
-
-  const s3Client = await getS3Client();
-  let uploadCount = 0;
-
-  const getContentType = (filePath: string): string => {
-    const ext = path.extname(filePath).toLowerCase();
-    if (ext === '.m3u8') return 'application/vnd.apple.mpegurl';
-    if (ext === '.ts') return 'video/mp2t';
-    return 'application/octet-stream';
+export async function uploadHlsFolderToS3(
+  localFolderPath: string,
+  s3Prefix: string,
+  dependencies: {
+    settings?: Awaited<ReturnType<typeof getS3Settings>>;
+    uploadFile?: (filePath: string, key: string, contentType: string, cacheControl: string, size: number) => Promise<void>;
+    verifyObject?: (key: string) => Promise<number>;
+  } = {}
+): Promise<number> {
+  const settings = dependencies.settings ? assertSpacesConfigured(dependencies.settings) : await requireSpacesSettings();
+  const s3Client = dependencies.uploadFile && dependencies.verifyObject ? undefined : await getS3Client();
+  const root = path.resolve(localFolderPath);
+  const files: Array<{ path: string; relative: string; size: number }> = [];
+  const walk = async (dir: string): Promise<void> => {
+    for (const entry of await fs.promises.readdir(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) await walk(fullPath);
+      else if (entry.isFile()) {
+        const stat = await fs.promises.stat(fullPath);
+        files.push({ path: fullPath, relative: path.relative(root, fullPath).split(path.sep).join('/'), size: stat.size });
+      }
+    }
   };
+  await walk(root);
+  validateHlsPackage(root, files.map((file) => file.relative));
 
-  const uploadDir = async (dirPath: string, keyPrefix: string) => {
-    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-    await Promise.all(
-      entries.map(async (entry) => {
-        const fullPath = path.join(dirPath, entry.name);
-        const s3Key = `${keyPrefix}/${entry.name}`;
-        if (entry.isDirectory()) {
-          await uploadDir(fullPath, s3Key);
-        } else if (entry.isFile()) {
-          const body = fs.readFileSync(fullPath);
-          const ext = path.extname(entry.name).toLowerCase();
-          await s3Client.send(
-            new PutObjectCommand({
+  const normalizedPrefix = s3Prefix.replace(/^\/+|\/+$/g, '');
+  let cursor = 0;
+  let failure: unknown;
+  const worker = async () => {
+    while (!failure) {
+      const index = cursor++;
+      if (index >= files.length) return;
+      const file = files[index];
+      const key = `${normalizedPrefix}/${file.relative}`;
+      const ext = path.extname(file.relative).toLowerCase();
+      const contentType = ext === '.m3u8'
+        ? 'application/vnd.apple.mpegurl'
+        : ext === '.ts'
+          ? 'video/mp2t'
+          : 'application/octet-stream';
+      try {
+        const cacheControl = ext === '.m3u8' ? 'no-cache' : 'max-age=31536000';
+        if (dependencies.uploadFile && dependencies.verifyObject) {
+          await dependencies.uploadFile(file.path, key, contentType, cacheControl, file.size);
+          const remoteSize = await dependencies.verifyObject(key);
+          if (remoteSize !== file.size) throw new Error(`HLS object verification failed for ${key}: expected ${file.size} bytes, found ${remoteSize}`);
+        } else {
+          const upload = new Upload({
+            client: s3Client!,
+            params: {
               Bucket: settings.bucket,
-              Key: s3Key,
-              Body: body,
-              ContentType: getContentType(entry.name),
-              CacheControl: ext === '.m3u8' ? 'no-cache' : 'max-age=31536000',
-              ...(settings.storageDriver === 'spaces' ? { ACL: 'public-read' } : {}),
-            })
-          );
-          uploadCount++;
+              Key: key,
+              Body: fs.createReadStream(file.path),
+              ContentType: contentType,
+              CacheControl: cacheControl,
+              ACL: 'public-read',
+            },
+            partSize: 8 * 1024 * 1024,
+            queueSize: 1,
+            leavePartsOnError: false,
+          });
+          let lastProgressLogAt = 0;
+          upload.on('httpUploadProgress', (progress) => {
+            const now = Date.now();
+            if (now - lastProgressLogAt < 5_000 && progress.loaded !== progress.total) return;
+            lastProgressLogAt = now;
+            logger.info({ key, loadedBytes: progress.loaded || 0, totalBytes: progress.total || 0 }, 'HLS Spaces upload progress');
+          });
+          await upload.done();
+          const head = await s3Client!.send(new HeadObjectCommand({ Bucket: settings.bucket, Key: key }));
+          if (head.ContentLength !== file.size) {
+            throw new Error(`HLS object verification failed for ${key}: expected ${file.size} bytes, found ${head.ContentLength ?? 0}`);
+          }
         }
-      })
-    );
+        logger.info({ key, uploadedBytes: file.size, contentType }, 'HLS object uploaded and verified');
+      } catch (error) {
+        failure = error;
+      }
+    }
   };
+  await Promise.all(Array.from({ length: Math.min(3, files.length) }, worker));
+  if (failure) throw failure;
 
-  await uploadDir(localFolderPath, s3Prefix.replace(/\/$/, ''));
-  logger.info({ s3Prefix, uploadCount }, 'HLS folder uploaded to remote storage');
-  return uploadCount;
+  logger.info({ s3Prefix: normalizedPrefix, uploadCount: files.length, totalBytes: files.reduce((sum, file) => sum + file.size, 0) }, 'Verified HLS upload to DigitalOcean Spaces');
+  return files.length;
+}
+
+export function validateHlsPackage(root: string, relativeFiles: string[]): void {
+  const fileSet = new Set(relativeFiles);
+  const playlists = relativeFiles.filter((file) => file.toLowerCase().endsWith('.m3u8'));
+  if (!playlists.length) throw new Error('HLS output is incomplete: no playlists were generated');
+
+  for (const playlist of playlists) {
+    const playlistPath = path.resolve(root, playlist);
+    const playlistText = fs.readFileSync(playlistPath, 'utf8');
+    if (!playlistText.split(/\r?\n/).some((line) => line.trim() === '#EXTM3U')) {
+      throw new Error(`Invalid HLS playlist: ${playlist}`);
+    }
+    const references = playlistText.split(/\r?\n/).flatMap((rawLine) => {
+      const line = rawLine.trim();
+      if (!line) return [];
+      const attributeUris = [...line.matchAll(/URI="([^"]+)"/g)].map((match) => match[1]);
+      return line.startsWith('#') ? attributeUris : [line];
+    });
+    if (!references.length) throw new Error(`Empty HLS playlist: ${playlist}`);
+
+    for (const reference of references) {
+      if (/^(?:https?:|data:)/i.test(reference)) continue;
+      const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(playlist), reference.split(/[?#]/)[0]));
+      if (resolved.startsWith('../') || path.isAbsolute(resolved) || !fileSet.has(resolved)) {
+        throw new Error(`HLS playlist ${playlist} references missing file ${reference}`);
+      }
+    }
+  }
 }
 
 /** HeadObject ContentLength — used to skip multi‑GB local HLS downloads */

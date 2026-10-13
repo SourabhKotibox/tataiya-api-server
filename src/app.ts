@@ -12,6 +12,7 @@ import { requestContext } from './lib/context';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const MAX_VIDEO_UPLOAD_BYTES = Math.max(2 * 1024 * 1024 * 1024, Number(process.env.MAX_VIDEO_UPLOAD_BYTES) || 25 * 1024 * 1024 * 1024);
 
 // Local cache/temp dir — required even when STORAGE_DRIVER=s3 (HLS temp, static plugin)
 const uploadsRoot = path.join(__dirname, '../uploads');
@@ -21,7 +22,7 @@ fs.mkdirSync(path.join(uploadsRoot, 'temp'), { recursive: true });
 
 const fastify = Fastify({
   logger: true,
-  bodyLimit: 2000 * 1024 * 1024, // 2GB
+  bodyLimit: MAX_VIDEO_UPLOAD_BYTES,
   trustProxy: true,
 });
 
@@ -88,7 +89,7 @@ fastify.register(fastifyJwt, {
 // Register Multipart for file uploads with optimized config
 fastify.register(fastifyMultipart as any, {
   limits: {
-    fileSize: 2000 * 1024 * 1024, // 2GB
+    fileSize: MAX_VIDEO_UPLOAD_BYTES,
     files: 10 // Max files per request
   }
 });

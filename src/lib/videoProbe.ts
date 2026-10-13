@@ -9,26 +9,16 @@ import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import ffprobeInstaller from '@ffprobe-installer/ffprobe';
 import path from 'path';
 import fs from 'fs';
-import { fileURLToPath } from 'url';
 import { logger } from './logger';
 import {
-  isS3Configured,
   uploadToS3,
   getS3PublicUrl,
-  downloadS3RangeToFile,
-  downloadFromS3ToFile,
+  requireSpacesSettings,
 } from './s3';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const TEMP_DIR = path.join(__dirname, '../../uploads/temp');
+import { createVideoWorkspace } from './videoJobRuntime';
 
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 ffmpeg.setFfprobePath(ffprobeInstaller.path);
-
-if (!fs.existsSync(TEMP_DIR)) {
-  fs.mkdirSync(TEMP_DIR, { recursive: true });
-}
 
 export type VideoProbeResult = {
   duration: number;
@@ -91,7 +81,7 @@ export async function probeVideo(input: string): Promise<VideoProbeResult> {
 
 /**
  * Grab one frame near 10% / 5s mark for poster/thumbnail auto-fill.
- * Returns public URL (S3 or local path).
+ * Returns a verified Spaces URL. The local frame is job-scoped and always removed.
  */
 export async function extractPosterFrame(
   input: string,
@@ -106,7 +96,8 @@ export async function extractPosterFrame(
     durationSeconds > 20
       ? Math.min(30, Math.floor(durationSeconds * 0.1))
       : Math.min(5, Math.max(1, Math.floor(durationSeconds / 3) || 1));
-  const outFile = path.join(TEMP_DIR, `poster-${mediaFileId}-${Date.now()}.jpg`);
+  const workspace = await createVideoWorkspace(`poster-${mediaFileId}`);
+  const outFile = path.join(workspace.path, 'poster.jpg');
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -122,64 +113,15 @@ export async function extractPosterFrame(
 
     if (!fs.existsSync(outFile)) return null;
 
-    if (await isS3Configured()) {
-      const key = `media/posters/${mediaFileId}-${Date.now()}.jpg`;
-      const buf = fs.readFileSync(outFile);
-      const url = await uploadToS3(key, buf, 'image/jpeg');
-      try {
-        fs.unlinkSync(outFile);
-      } catch {
-        /* ignore */
-      }
-      return url;
-    }
-
-    return `/uploads/temp/${path.basename(outFile)}`;
+    await requireSpacesSettings();
+    const key = `media/posters/${mediaFileId}-${Date.now()}.jpg`;
+    return await uploadToS3(key, fs.createReadStream(outFile), 'image/jpeg');
   } catch (err) {
     logger.warn({ err, mediaFileId }, 'Poster frame extraction failed');
-    try {
-      if (fs.existsSync(outFile)) fs.unlinkSync(outFile);
-    } catch {
-      /* ignore */
-    }
     return null;
+  } finally {
+    await workspace.cleanup();
   }
-}
-
-/**
- * Resolve a LOCAL file for probing. Downloads a byte-range from S3 when needed.
- * Never returns an https:// URL (static ffprobe SIGSEGVs on those).
- */
-export async function resolveProbeInput(opts: {
-  localPath?: string;
-  s3Key?: string;
-  publicUrl?: string;
-  mediaFileId?: string;
-}): Promise<{ path: string; cleanup?: string }> {
-  if (opts.localPath && fs.existsSync(opts.localPath)) {
-    return { path: opts.localPath };
-  }
-
-  if (opts.s3Key && (await isS3Configured())) {
-    const dest = path.join(
-      TEMP_DIR,
-      `probe-${opts.mediaFileId || 'x'}-${Date.now()}${path.extname(opts.s3Key) || '.mp4'}`
-    );
-    try {
-      await downloadS3RangeToFile(opts.s3Key, dest, 64 * 1024 * 1024);
-      return { path: dest, cleanup: dest };
-    } catch (rangeErr) {
-      logger.warn({ rangeErr, s3Key: opts.s3Key }, 'S3 range probe download failed — trying full object');
-      await downloadFromS3ToFile(opts.s3Key, dest);
-      return { path: dest, cleanup: dest };
-    }
-  }
-
-  // Last resort: if only a public URL exists we still refuse HTTPS probe
-  if (opts.publicUrl) {
-    throw new Error('Cannot probe remote URL safely — S3 key required for local download');
-  }
-  throw new Error('No probeable video source');
 }
 
 export { getS3PublicUrl };

@@ -4,15 +4,10 @@ import fs from 'fs';
 import { Types } from 'mongoose';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import ffprobeInstaller from '@ffprobe-installer/ffprobe';
-import { fileURLToPath } from 'url';
 import { MovieModel } from '../models/Movie';
 import { logger } from '../lib/logger';
-import { isS3Configured, uploadHlsFolderToS3, getHlsPublicBaseUrl, getS3PublicUrl, downloadFromS3ToFile } from '../lib/s3';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const UPLOADS_ROOT = path.resolve(__dirname, '../../uploads');
-const TEMP_DIR = path.resolve(__dirname, '../../uploads/temp');
+import { deleteS3Prefix, downloadFromS3ToFile, ensureVideoSourceInSpaces, getHlsPublicBaseUrl, requireSpacesSettings, uploadHlsFolderToS3, validateHlsPackage } from '../lib/s3';
+import { assertVideoDiskCapacity, createVideoWorkspace, estimateHlsOutputBytes } from '../lib/videoJobRuntime';
 
 const ffmpegPath = ffmpegInstaller?.path || 'ffmpeg';
 const ffprobePath = ffprobeInstaller?.path || 'ffprobe';
@@ -78,12 +73,6 @@ const ensureDir = (dir: string) => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 };
 
-const countFiles = (folderPath: string): number =>
-  fs.readdirSync(folderPath, { withFileTypes: true }).reduce((count, entry) => {
-    const entryPath = path.join(folderPath, entry.name);
-    return count + (entry.isDirectory() ? countFiles(entryPath) : entry.isFile() ? 1 : 0);
-  }, 0);
-
 const validateEpisodeHlsOutput = (
   hlsFolder: string,
   qualities: ReadonlyArray<typeof HLS_QUALITY_LADDER[number]>
@@ -109,15 +98,6 @@ const validateEpisodeHlsOutput = (
       }
     }
   }
-};
-
-export const toLocalUploadPath = (urlPath: string): string | null => {
-  if (!urlPath) return null;
-  let relPath = urlPath;
-  if (relPath.startsWith('/uploads/')) relPath = relPath.replace('/uploads/', '');
-  else if (relPath.startsWith('uploads/')) relPath = relPath.replace('uploads/', '');
-  else if (relPath.startsWith('/media/')) relPath = relPath.replace('/', '');
-  return path.join(UPLOADS_ROOT, relPath);
 };
 
 const getFolderSize = (folderPath: string): number => {
@@ -196,27 +176,7 @@ const filterQualitiesByResolution = (
   if (matches.length === 0) {
     matches = [HLS_QUALITY_LADDER[0]]; // fallback to 144p
   }
-  // Cap to maximum of 2 ladders (Base + Original) for VERY FAST processing
-  if (matches.length > 2) {
-    matches = [
-      matches.find((q) => q.name === '360p') || matches[0],
-      matches[matches.length - 1],
-    ].filter((v, i, a) => a.findIndex((t) => t.name === v.name) === i) as any;
-  }
   return matches;
-};
-
-export const extractS3Key = (source: string): string | null => {
-  if (!source) return null;
-  if (/^https?:\/\//i.test(source)) {
-    try {
-      const parsed = new URL(source);
-      return parsed.pathname.replace(/^\/+/, '').replace(/^uploads\//, '');
-    } catch {
-      return null;
-    }
-  }
-  return source.replace(/^\/*uploads\//, '').replace(/^\/+/, '');
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -225,103 +185,61 @@ export const extractS3Key = (source: string): string | null => {
 export const transcodeHlsMultiResolution = async (options: {
   id: string;
   sourceVideoUrl: string;
+  sourceVideoKey?: string;
+  jobId?: string;
   startSeconds?: number;
   duration?: number;
-  folderType?: 'movies' | 'episodes';
+  folderType?: 'movies' | 'episodes' | 'tvshows';
 }) => {
   const { id, sourceVideoUrl, startSeconds, duration, folderType = 'movies' } = options;
-  let tempSourcePath: string | null = null;
-
+  await requireSpacesSettings();
+  const source = await ensureVideoSourceInSpaces(sourceVideoUrl, folderType, id, options.sourceVideoKey);
+  const workspace = await createVideoWorkspace(`${folderType}-${id}-${options.jobId || Date.now()}`);
+  const tempSourcePath = path.join(workspace.path, `source${path.extname(source.key) || '.mp4'}`);
+  const hlsFolder = path.join(workspace.path, 'hls');
+  const s3Prefix = `hls/${folderType}/${id}/${options.jobId || Date.now()}`;
   try {
-    ensureDir(TEMP_DIR);
-
-    // ── Resolve input path (local file, or download remote/S3/Spaces source to temp) ──
-    let ffmpegInput: string | null = null;
-    const sourceVideoPath = toLocalUploadPath(sourceVideoUrl);
-
-    if (sourceVideoPath && fs.existsSync(sourceVideoPath)) {
-      ffmpegInput = sourceVideoPath;
-    } else {
-      const s3Active = await isS3Configured();
-      const s3Key = extractS3Key(sourceVideoUrl);
-
-      if (s3Active && s3Key) {
-        tempSourcePath = path.join(
-          TEMP_DIR,
-          `media-source-${id}-${Date.now()}${path.extname(s3Key) || '.mp4'}`
-        );
-        logger.info({ id, s3Key, tempSourcePath }, 'Downloading remote video for HLS transcoding');
-        await downloadFromS3ToFile(s3Key, tempSourcePath);
-        if (fs.existsSync(tempSourcePath) && fs.statSync(tempSourcePath).size > 0) {
-          ffmpegInput = tempSourcePath;
-        } else {
-          throw new Error(`Authenticated download produced empty file for key: ${s3Key}`);
-        }
-      } else if (sourceVideoUrl.startsWith('http://') || sourceVideoUrl.startsWith('https://')) {
-        ffmpegInput = sourceVideoUrl;
-      }
-    }
-
-    if (!ffmpegInput || !fs.existsSync(ffmpegInput)) {
-      throw new Error(`Source video not found or could not be downloaded: ${sourceVideoUrl}`);
-    }
-
-    // ── Determine local HLS output folder ──────────────────────────────────
-    const hlsFolder    = path.join(UPLOADS_ROOT, 'hls', folderType, id);
-    const localUrlBase = `/uploads/hls/${folderType}/${id}`;
-
-    // Clear any existing HLS files to prevent mixing old and new uploads
-    if (fs.existsSync(hlsFolder)) {
-      try {
-        fs.rmSync(hlsFolder, { recursive: true, force: true });
-      } catch (rmErr) {
-        logger.warn({ rmErr, hlsFolder }, 'Failed to clear existing HLS folder');
-      }
-    }
-    ensureDir(hlsFolder);
+    await assertVideoDiskCapacity(source.size * 2, workspace.path);
+    await downloadFromS3ToFile(source.key, tempSourcePath);
+    await fs.promises.mkdir(hlsFolder, { recursive: true });
 
     // ── Detect source resolution & duration ────────────────────────────────
     const [sourceRes, detectedDurationSeconds] = await Promise.all([
-      probeResolution(ffmpegInput),
-      probeDuration(ffmpegInput),
+      probeResolution(tempSourcePath),
+      probeDuration(tempSourcePath),
     ]);
     const sourceHeight = sourceRes?.height ?? 1080;
     const qualities = filterQualitiesByResolution(sourceHeight);
+    const estimatedHlsBytes = estimateHlsOutputBytes(detectedDurationSeconds || 0, qualities.map((quality) => ({ bitrate: quality.bitrate, audioBitrate: quality.audioBitrate })));
+    await assertVideoDiskCapacity(estimatedHlsBytes, workspace.path);
     logger.info(
       { id, sourceHeight, detectedDurationSeconds, qualityCount: qualities.length, mode: 'sequential-safe' },
       'Starting HLS transcoding'
     );
-
-    const s3Active = await isS3Configured();
-    const revision = folderType === 'episodes' ? `/${Date.now()}` : '';
-    const s3Prefix = `hls/${folderType}/${id}${revision}`;
 
     const hlsResult = await transcodeHlsSequential({
       startSeconds,
       duration,
       qualities,
       hlsFolder,
-      localUrlBase,
-      ffmpegInput,
+      ffmpegInput: tempSourcePath,
       movieId: id,
       folderType,
-      s3Active,
-      s3Prefix
+      s3Prefix,
+      jobId: options.jobId || id,
     });
 
     return {
       ...hlsResult,
       detectedDurationSeconds,
+      sourceVideoKey: source.key,
+      sourceVideoUrl: source.url,
     };
+  } catch (error) {
+    await deleteS3Prefix(s3Prefix).catch((cleanupError) => logger.error({ cleanupError, id, s3Prefix }, 'Failed to remove partial HLS upload'));
+    throw error;
   } finally {
-    if (tempSourcePath && fs.existsSync(tempSourcePath)) {
-      try {
-        fs.unlinkSync(tempSourcePath);
-        logger.info({ id, tempSourcePath }, 'Cleaned up temporary source video file');
-      } catch (cleanupErr) {
-        logger.warn({ cleanupErr, tempSourcePath }, 'Failed to clean up temporary source video file');
-      }
-    }
+    await workspace.cleanup();
   }
 };
 
@@ -333,14 +251,13 @@ const transcodeHlsSequential = async (opts: {
   duration?: number;
   qualities: ReadonlyArray<typeof HLS_QUALITY_LADDER[number]>;
   hlsFolder: string;
-  localUrlBase: string;
   ffmpegInput: string;
   movieId: string;
-  folderType?: 'movies' | 'episodes';
-  s3Active?: boolean;
-  s3Prefix?: string;
+  folderType?: 'movies' | 'episodes' | 'tvshows';
+  s3Prefix: string;
+  jobId: string;
 }) => {
-  const { startSeconds, duration, qualities, hlsFolder, localUrlBase, ffmpegInput, movieId, folderType = 'movies', s3Active, s3Prefix } = opts;
+  const { startSeconds, duration, qualities, hlsFolder, ffmpegInput, movieId, folderType = 'movies', s3Prefix, jobId } = opts;
 
   for (const q of qualities) {
     const qFolder = path.join(hlsFolder, q.name);
@@ -391,19 +308,11 @@ const transcodeHlsSequential = async (opts: {
     const folderSize = getFolderSize(qFolder);
     (q as any).folderSize = folderSize; // attach size for later
 
-    if (s3Active && s3Prefix) {
-      const { uploadHlsFolderToS3 } = require('../lib/s3');
-      await uploadHlsFolderToS3(qFolder, `${s3Prefix}/${q.name}`);
-      logger.info({ quality: q.name }, 'Sequential quality uploaded to DO Spaces');
-      fs.rmSync(qFolder, { recursive: true, force: true });
-    }
   }
 
   // Rebuild master.m3u8
   writeMasterPlaylist(hlsFolder, qualities);
-  // (Validation is now done sequentially per quality)
-
-  const out = await buildLocalHlsOutput({ qualities, hlsFolder, localUrlBase, movieId, folderType, s3Active: opts.s3Active, s3Prefix: opts.s3Prefix });
+  const out = await buildSpacesHlsOutput({ qualities, hlsFolder, s3Prefix, jobId });
   return {
     hlsUrl:         out.masterUrl,
     videoQualities: out.renditions,
@@ -429,37 +338,35 @@ const writeMasterPlaylist = (
   fs.writeFileSync(path.join(hlsFolder, 'master.m3u8'), masterLines.join('\n'), 'utf-8');
 };
 
-const buildLocalHlsOutput = async (opts: {
+const buildSpacesHlsOutput = async (opts: {
   qualities: ReadonlyArray<typeof HLS_QUALITY_LADDER[number]>;
   hlsFolder: string;
-  localUrlBase: string;
-  movieId: string;
-  folderType?: 'movies' | 'episodes';
-  s3Active?: boolean;
-  s3Prefix?: string;
+  s3Prefix: string;
+  jobId: string;
 }) => {
-  const { qualities, hlsFolder, localUrlBase, movieId, folderType = 'movies', s3Active, s3Prefix } = opts;
-
-  if (s3Active && s3Prefix) {
-    // Only upload the master playlist, qualities were uploaded sequentially
-    const { uploadHlsFolderToS3 } = require('../lib/s3');
-    await uploadHlsFolderToS3(hlsFolder, s3Prefix);
-    
-    const baseUrl = await getHlsPublicBaseUrl();
-    const masterUrl = `${baseUrl}/${s3Prefix}/master.m3u8`;
-    const renditions = qualities.map((q) => ({
-      quality: q.name as QualityName,
-      url: `${baseUrl}/${s3Prefix}/${q.name}/playlist.m3u8`,
-      size: (q as any).folderSize || 0,
-    }));
-    try { fs.rmSync(hlsFolder, { recursive: true, force: true }); } catch { /* ignore */ }
-    return { masterUrl, renditions };
+  const { qualities, hlsFolder, s3Prefix, jobId } = opts;
+  const relativeFiles: string[] = [];
+  const collectFiles = (directory: string, base = '') => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const relative = path.posix.join(base, entry.name);
+      if (entry.isDirectory()) collectFiles(path.join(directory, entry.name), relative);
+      else if (entry.isFile()) relativeFiles.push(relative);
+    }
+  };
+  collectFiles(hlsFolder);
+  validateEpisodeHlsOutput(hlsFolder, qualities);
+  validateHlsPackage(hlsFolder, relativeFiles);
+  const queue = await import('./videoProcessingQueue');
+  await queue.markVideoJobUploading(jobId);
+  const uploadedCount = await uploadHlsFolderToS3(hlsFolder, s3Prefix);
+  if (uploadedCount !== relativeFiles.length) {
+    throw new Error(`Partial HLS package upload: ${uploadedCount}/${relativeFiles.length} objects verified`);
   }
-
-  const masterUrl = `${localUrlBase}/master.m3u8`;
+  const baseUrl = await getHlsPublicBaseUrl();
+  const masterUrl = `${baseUrl}/${s3Prefix}/master.m3u8`;
   const renditions = qualities.map((q) => ({
     quality: q.name as QualityName,
-    url: `${localUrlBase}/${q.name}/playlist.m3u8`,
+    url: `${baseUrl}/${s3Prefix}/${q.name}/playlist.m3u8`,
     size: (q as any).folderSize || getFolderSize(path.join(hlsFolder, q.name)),
   }));
   return { masterUrl, renditions };
@@ -468,7 +375,7 @@ const buildLocalHlsOutput = async (opts: {
 // ─────────────────────────────────────────────────────────────────────────────
 // Public processors — Movies
 // ─────────────────────────────────────────────────────────────────────────────
-export const processMovieHls = async (movieId: Types.ObjectId | string, sourceVideoUrl: string) => {
+export const processMovieHls = async (movieId: Types.ObjectId | string, sourceVideoUrl: string, jobId = movieId.toString()) => {
   try {
     // Never accept a trailer as the movie source
     if (/trailer/i.test(sourceVideoUrl)) {
@@ -480,6 +387,8 @@ export const processMovieHls = async (movieId: Types.ObjectId | string, sourceVi
     const result = await transcodeHlsMultiResolution({
       id: movieId.toString(),
       sourceVideoUrl,
+      sourceVideoKey: (await MovieModel.findById(movieId).select('sourceVideoKey').lean() as any)?.sourceVideoKey,
+      jobId,
     });
 
     const existing = await MovieModel.findById(movieId).select('trailerUrl').lean();
@@ -488,10 +397,14 @@ export const processMovieHls = async (movieId: Types.ObjectId | string, sourceVi
       throw new Error('Refusing to overwrite movie with trailer URL');
     }
 
+    const queue = await import('./videoProcessingQueue');
+    await queue.assertVideoJobLease(jobId);
+
     await MovieModel.findByIdAndUpdate(movieId, {
       hlsUrl:          result.hlsUrl,
-      videoUrl:        sourceVideoUrl,
-      sourceVideoUrl,
+      videoUrl:        result.sourceVideoUrl,
+      sourceVideoUrl:  result.sourceVideoUrl,
+      sourceVideoKey:  result.sourceVideoKey,
       videoQualities:  result.videoQualities,
       status:          'published',
       processingStatus:'ready',
@@ -501,52 +414,11 @@ export const processMovieHls = async (movieId: Types.ObjectId | string, sourceVi
     logger.info({ movieId, hlsUrl: result.hlsUrl }, 'Movie HLS processing complete');
   } catch (error: any) {
     logger.error({ error, movieId }, 'Error processing movie HLS');
-    await MovieModel.findByIdAndUpdate(movieId, {
-      processingStatus: 'failed',
-      processingError:  error.message,
-    });
-  }
-};
-
-type MovieHlsJob = {
-  movieId: Types.ObjectId | string;
-  sourceVideoUrl: string;
-};
-
-const movieHlsQueue: MovieHlsJob[] = [];
-let movieHlsWorkerRunning = false;
-
-const runMovieHlsQueue = async () => {
-  if (movieHlsWorkerRunning) return;
-
-  movieHlsWorkerRunning = true;
-
-  try {
-    while (movieHlsQueue.length > 0) {
-      const job = movieHlsQueue.shift();
-
-      if (!job) continue;
-
-      logger.info(
-        {
-          movieId: job.movieId.toString(),
-          remainingJobs: movieHlsQueue.length,
-        },
-        'Starting queued movie HLS job'
-      );
-
-      await processMovieHls(job.movieId, job.sourceVideoUrl);
-
-      logger.info(
-        {
-          movieId: job.movieId.toString(),
-          remainingJobs: movieHlsQueue.length,
-        },
-        'Queued movie HLS job finished'
-      );
+    const queue = await import('./videoProcessingQueue');
+    if (await queue.ownsVideoJobLease(jobId).catch(() => false)) {
+      await MovieModel.findByIdAndUpdate(movieId, { processingStatus: 'failed', processingError: error.message });
     }
-  } finally {
-    movieHlsWorkerRunning = false;
+    throw error;
   }
 };
 
@@ -554,25 +426,12 @@ export const processMovieInBackground = (
   movieId: Types.ObjectId | string,
   sourceVideoUrl: string
 ) => {
-  movieHlsQueue.push({
-    movieId,
-    sourceVideoUrl,
-  });
-
-  logger.info(
-    {
-      movieId: movieId.toString(),
-      queueLength: movieHlsQueue.length,
-    },
-    'Movie HLS job added to queue'
-  );
-
-  setImmediate(() => {
-    void runMovieHlsQueue();
-  });
+  void import('./videoProcessingQueue')
+    .then(({ enqueueVideoProcessingJob }) => enqueueVideoProcessingJob('movie', movieId, sourceVideoUrl))
+    .catch((error) => logger.error({ error, movieId }, 'Failed to persist movie HLS job'));
 };
 
-export const processEpisodeHls = async (episodeId: Types.ObjectId | string, sourceVideoUrl: string) => {
+export const processEpisodeHls = async (episodeId: Types.ObjectId | string, sourceVideoUrl: string, jobId = episodeId.toString()) => {
   try {
     const { EpisodeModel } = await import('../models/Episode');
     await EpisodeModel.findByIdAndUpdate(episodeId, { processingStatus: 'processing' });
@@ -580,12 +439,17 @@ export const processEpisodeHls = async (episodeId: Types.ObjectId | string, sour
     const result = await transcodeHlsMultiResolution({
       id: episodeId.toString(),
       sourceVideoUrl,
+      sourceVideoKey: (await EpisodeModel.findById(episodeId).select('sourceVideoKey').lean() as any)?.sourceVideoKey,
+      jobId,
       folderType: 'episodes', // Isolated from movies
     });
 
     // Build the update object — always set hlsUrl + status
     const episodeUpdate: any = {
       hlsUrl:           result.hlsUrl,
+      sourceVideoUrl:   result.sourceVideoUrl,
+      sourceVideoKey:   result.sourceVideoKey,
+      videoUrl:         result.sourceVideoUrl,
       videoQualities:   result.videoQualities,
       processingStatus: 'ready',
       processingError:  null,
@@ -603,58 +467,19 @@ export const processEpisodeHls = async (episodeId: Types.ObjectId | string, sour
       }
     }
 
+    const queue = await import('./videoProcessingQueue');
+    await queue.assertVideoJobLease(jobId);
     await EpisodeModel.findByIdAndUpdate(episodeId, episodeUpdate);
 
     logger.info({ episodeId, hlsUrl: result.hlsUrl }, 'Episode HLS processing complete');
   } catch (error: any) {
     logger.error({ episodeId, error }, 'Episode HLS processing failed');
-    const { EpisodeModel } = await import('../models/Episode');
-    await EpisodeModel.findByIdAndUpdate(episodeId, {
-      processingStatus: 'failed',
-      processingError: error.message || 'Unknown processing error',
-    });
-  }
-};
-
-type EpisodeHlsJob = {
-  episodeId: Types.ObjectId | string;
-  sourceVideoUrl: string;
-};
-
-const episodeHlsQueue: EpisodeHlsJob[] = [];
-let episodeHlsWorkerRunning = false;
-
-const runEpisodeHlsQueue = async () => {
-  if (episodeHlsWorkerRunning) return;
-
-  episodeHlsWorkerRunning = true;
-
-  try {
-    while (episodeHlsQueue.length > 0) {
-      const job = episodeHlsQueue.shift();
-
-      if (!job) continue;
-
-      logger.info(
-        {
-          episodeId: job.episodeId.toString(),
-          remainingJobs: episodeHlsQueue.length,
-        },
-        'Starting queued episode HLS job'
-      );
-
-      await processEpisodeHls(job.episodeId, job.sourceVideoUrl);
-
-      logger.info(
-        {
-          episodeId: job.episodeId.toString(),
-          remainingJobs: episodeHlsQueue.length,
-        },
-        'Queued episode HLS job finished'
-      );
+    const queue = await import('./videoProcessingQueue');
+    if (await queue.ownsVideoJobLease(jobId).catch(() => false)) {
+      const { EpisodeModel } = await import('../models/Episode');
+      await EpisodeModel.findByIdAndUpdate(episodeId, { processingStatus: 'failed', processingError: error.message || 'Unknown processing error' });
     }
-  } finally {
-    episodeHlsWorkerRunning = false;
+    throw error;
   }
 };
 
@@ -662,25 +487,12 @@ export const processEpisodeInBackground = (
   episodeId: Types.ObjectId | string,
   sourceVideoUrl: string
 ) => {
-  episodeHlsQueue.push({
-    episodeId,
-    sourceVideoUrl,
-  });
-
-  logger.info(
-    {
-      episodeId: episodeId.toString(),
-      queueLength: episodeHlsQueue.length,
-    },
-    'Episode HLS job added to queue'
-  );
-
-  setImmediate(() => {
-    void runEpisodeHlsQueue();
-  });
+  void import('./videoProcessingQueue')
+    .then(({ enqueueVideoProcessingJob }) => enqueueVideoProcessingJob('episode', episodeId, sourceVideoUrl))
+    .catch((error) => logger.error({ error, episodeId }, 'Failed to persist episode HLS job'));
 };
 
-export const processTVShowHls = async (tvShowId: Types.ObjectId | string, sourceVideoUrl: string) => {
+export const processTVShowHls = async (tvShowId: Types.ObjectId | string, sourceVideoUrl: string, jobId = tvShowId.toString()) => {
   try {
     const { TVShowModel } = await import('../models/TVShow');
     await TVShowModel.findByIdAndUpdate(tvShowId, { processingStatus: 'processing' });
@@ -688,13 +500,18 @@ export const processTVShowHls = async (tvShowId: Types.ObjectId | string, source
     const result = await transcodeHlsMultiResolution({
       id: tvShowId.toString(),
       sourceVideoUrl,
-      folderType: 'movies',
+      sourceVideoKey: (await TVShowModel.findById(tvShowId).select('sourceVideoKey').lean() as any)?.sourceVideoKey,
+      jobId,
+      folderType: 'tvshows',
     });
 
+    const queue = await import('./videoProcessingQueue');
+    await queue.assertVideoJobLease(jobId);
     await TVShowModel.findByIdAndUpdate(tvShowId, {
       hlsUrl: result.hlsUrl,
-      videoUrl: sourceVideoUrl,
-      sourceVideoUrl,
+      videoUrl: result.sourceVideoUrl,
+      sourceVideoUrl: result.sourceVideoUrl,
+      sourceVideoKey: result.sourceVideoKey,
       videoQualities: result.videoQualities,
       processingStatus: 'ready',
       processingError: null,
@@ -703,18 +520,19 @@ export const processTVShowHls = async (tvShowId: Types.ObjectId | string, source
     logger.info({ tvShowId, hlsUrl: result.hlsUrl }, 'TV show HLS processing complete');
   } catch (error: any) {
     logger.error({ error, tvShowId }, 'Error processing TV show HLS');
-    const { TVShowModel } = await import('../models/TVShow');
-    await TVShowModel.findByIdAndUpdate(tvShowId, {
-      processingStatus: 'failed',
-      processingError: error.message,
-    });
+    const queue = await import('./videoProcessingQueue');
+    if (await queue.ownsVideoJobLease(jobId).catch(() => false)) {
+      const { TVShowModel } = await import('../models/TVShow');
+      await TVShowModel.findByIdAndUpdate(tvShowId, { processingStatus: 'failed', processingError: error.message });
+    }
+    throw error;
   }
 };
 
 export const processTVShowInBackground = (tvShowId: Types.ObjectId | string, sourceVideoUrl: string) => {
-  setImmediate(async () => {
-    await processTVShowHls(tvShowId, sourceVideoUrl);
-  });
+  void import('./videoProcessingQueue')
+    .then(({ enqueueVideoProcessingJob }) => enqueueVideoProcessingJob('tvShow', tvShowId, sourceVideoUrl))
+    .catch((error) => logger.error({ error, tvShowId }, 'Failed to persist TV-show HLS job'));
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -730,62 +548,6 @@ export const autoDetectAndSyncQualities = async (
       : type === 'tvShow'
         ? (await import('../models/TVShow')).TVShowModel
         : MovieModel;
-  const folderType = type === 'episode' ? 'episodes' : 'movies';
-
   const doc = await (Model as any).findById(id).lean();
-  if (!doc) return null;
-
-  const hlsFolder = path.join(UPLOADS_ROOT, 'hls', folderType, id.toString());
-  const masterPlaylistPath = path.join(hlsFolder, 'master.m3u8');
-
-  if (fs.existsSync(masterPlaylistPath)) {
-    const validQualities = ['144p', '240p', '360p', '480p', '720p', '1080p', '1440p', '2160p'];
-    const detectedQualities: string[] = [];
-
-    const dirs = fs.readdirSync(hlsFolder, { withFileTypes: true });
-    for (const dir of dirs) {
-      if (dir.isDirectory() && validQualities.includes(dir.name)) {
-        const qualityPlaylistPath = path.join(hlsFolder, dir.name, 'playlist.m3u8');
-        if (fs.existsSync(qualityPlaylistPath)) {
-          detectedQualities.push(dir.name);
-        }
-      }
-    }
-
-    if (detectedQualities.length > 0) {
-      const hlsUrl = `/uploads/hls/${folderType}/${id}/master.m3u8`;
-      const videoQualities = detectedQualities.map(q => ({
-        quality: q,
-        url: `/uploads/hls/${folderType}/${id}/${q}/playlist.m3u8`,
-        size: getFolderSize(path.join(hlsFolder, q))
-      }));
-
-      // Check if we need to update
-      const currentQualitiesStr = JSON.stringify(doc.videoQualities || []);
-      const newQualitiesStr = JSON.stringify(videoQualities);
-      const hasDiff = currentQualitiesStr !== newQualitiesStr ||
-                      doc.processingStatus !== 'ready' ||
-                      (doc as any).hlsUrl !== hlsUrl;
-
-      if (hasDiff) {
-        logger.info({ id: id.toString(), qualityCount: videoQualities.length }, 'Syncing auto-detected HLS qualities to MongoDB');
-
-        const updateData: any = {
-          hlsUrl,
-          videoQualities,
-          processingStatus: 'ready',
-          processingError: null,
-        };
-
-        if ((doc as any).status === 'draft' || !(doc as any).status || (doc as any).status === 'processing') {
-          updateData.status = 'published';
-        }
-
-        const updatedDoc = await (Model as any).findByIdAndUpdate(id, { $set: updateData }, { new: true }).lean();
-        return updatedDoc;
-      }
-      return doc;
-    }
-  }
   return doc;
 };

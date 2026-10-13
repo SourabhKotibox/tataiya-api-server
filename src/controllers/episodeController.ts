@@ -5,7 +5,6 @@ import { TVShowModel } from '../models/TVShow';
 import { Types } from 'mongoose';
 import { logger } from '../lib/logger';
 import { syncTVShowTotalSeasons } from '../lib/seasonStats';
-import { isRawLocalVideo } from '../lib/contentResolver';
 
 export const getAllEpisodes = async (request: FastifyRequest, reply: FastifyReply) => {
   try {
@@ -162,8 +161,7 @@ export const createEpisode = async (request: FastifyRequest, reply: FastifyReply
     const isHlsPlaylist = /\.m3u8(?:[?#]|$)/i.test(submittedVideoUrl);
     const hlsUrl = String(body.hlsUrl || (body.videoUploadType === 'hls' || isHlsPlaylist ? submittedVideoUrl : '')).trim();
     const videoPath = hlsUrl ? '' : submittedVideoUrl;
-    const shouldProcessHls = !!videoPath && !isHlsPlaylist &&
-      (isRawLocalVideo(videoPath) || body.videoUploadType === 'local');
+    const shouldProcessHls = !!videoPath && !isHlsPlaylist;
     if (hlsUrl) {
       body.hlsUrl = hlsUrl;
     } else if (videoPath) {
@@ -240,8 +238,7 @@ export const updateEpisode = async (request: FastifyRequest, reply: FastifyReply
       videoPath = hlsUrl ? '' : submittedVideoUrl;
       const previousSource = String((existingEpisode as any).sourceVideoUrl || '');
       const previousHlsUrl = String((existingEpisode as any).hlsUrl || '');
-      shouldProcessHls = !!videoPath && !isHlsPlaylist && videoPath !== previousSource &&
-        (isRawLocalVideo(videoPath) || body.videoUploadType === 'local');
+      shouldProcessHls = !!videoPath && !isHlsPlaylist && videoPath !== previousSource;
 
       if (hlsUrl) {
         body.hlsUrl = hlsUrl;

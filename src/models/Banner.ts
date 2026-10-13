@@ -17,7 +17,7 @@ export interface IBanner extends Document {
   contentType: 'movie' | 'tvShow' | 'show' | 'series' | 'custom';
   position: number;
   isActive: boolean;
-  targetPlatforms: Array<'web' | 'mobile' | 'tv'>;
+  targetPlatforms: Array<'web' | 'mobile' | 'tv' | 'all'>;
   startDate?: Date;
   endDate?: Date;
   clickCount: number;
@@ -56,7 +56,7 @@ const BannerSchema = new Schema<IBanner>(
     isActive: { type: Boolean, default: true, index: true },
     targetPlatforms: {
       type: [String],
-      enum: ['web', 'mobile', 'tv'],
+      enum: ['web', 'mobile', 'tv', 'all'],
       default: ['web', 'mobile'],
     },
     startDate: Date,

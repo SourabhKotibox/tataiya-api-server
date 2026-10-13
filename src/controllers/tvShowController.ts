@@ -291,10 +291,10 @@ export const createTVShow = async (request: FastifyRequest, reply: FastifyReply)
       }
     }
 
-    // Check if the uploaded video is a raw MP4 or local media file
-    const isLocalPath = body.hlsUrl && !body.hlsUrl.startsWith('http://') && !body.hlsUrl.startsWith('https://');
-    const isRawLocalVideo = isLocalPath && !body.hlsUrl.endsWith('.m3u8');
-    if (isRawLocalVideo) {
+    // Any source video that is not already an HLS playlist must be stored in Spaces and transcoded.
+    const mainVideo = typeof body.hlsUrl === 'string' ? body.hlsUrl.trim() : '';
+    const isRawVideo = !!mainVideo && !/\.m3u8(?:[?#]|$)/i.test(mainVideo);
+    if (isRawVideo) {
       body.processingStatus = 'queued';
     } else {
       body.processingStatus = 'ready';
@@ -305,7 +305,6 @@ export const createTVShow = async (request: FastifyRequest, reply: FastifyReply)
       body.trailerUrl = typeof rawTrailer === 'string' ? rawTrailer.trim() : '';
     }
 
-    const mainVideo = typeof body.hlsUrl === 'string' ? body.hlsUrl.trim() : '';
     const trailer = typeof body.trailerUrl === 'string' ? body.trailerUrl.trim() : '';
     if (mainVideo && !mainVideo.startsWith('blob:') && mainVideo !== trailer && !mainVideo.includes('.m3u8')) {
       body.sourceVideoUrl = mainVideo;
@@ -327,7 +326,7 @@ export const createTVShow = async (request: FastifyRequest, reply: FastifyReply)
     const tvShow = await TVShowModel.create(body);
     await syncSections(tvShow._id.toString(), body.sections);
 
-    if (isRawLocalVideo) {
+    if (isRawVideo) {
       import('../services/videoProcessor').then(({ processTVShowInBackground }) => {
         processTVShowInBackground(tvShow._id, body.hlsUrl);
       });
@@ -387,10 +386,10 @@ export const updateTVShow = async (request: FastifyRequest, reply: FastifyReply)
       return reply.status(404).send({ success: false, error: 'TVShow not found' });
     }
 
-    // Check if the hlsUrl has changed to a new raw MP4
-    const isLocalPath = body.hlsUrl && !body.hlsUrl.startsWith('http://') && !body.hlsUrl.startsWith('https://');
-    const isRawLocalVideo = isLocalPath && !body.hlsUrl.endsWith('.m3u8') && body.hlsUrl !== (existingTVShow as any).hlsUrl;
-    if (isRawLocalVideo) {
+    // Any changed non-HLS video source must be moved to Spaces and transcoded.
+    const mainVideo = typeof body.hlsUrl === 'string' ? body.hlsUrl.trim() : '';
+    const isRawVideo = !!mainVideo && !/\.m3u8(?:[?#]|$)/i.test(mainVideo) && mainVideo !== (existingTVShow as any).hlsUrl;
+    if (isRawVideo) {
       body.processingStatus = 'queued';
     } else if (body.hlsUrl) {
       body.processingStatus = 'ready';
@@ -406,7 +405,6 @@ export const updateTVShow = async (request: FastifyRequest, reply: FastifyReply)
       delete body.trailerUrl;
     }
 
-    const mainVideo = typeof body.hlsUrl === 'string' ? body.hlsUrl.trim() : '';
     const trailer = typeof body.trailerUrl === 'string' ? body.trailerUrl.trim() : String((existingTVShow as any).trailerUrl || '');
     if (mainVideo && !mainVideo.startsWith('blob:') && mainVideo !== trailer && !mainVideo.includes('.m3u8')) {
       body.sourceVideoUrl = mainVideo;
@@ -448,7 +446,7 @@ export const updateTVShow = async (request: FastifyRequest, reply: FastifyReply)
       await syncSections(id, body.sections);
     }
 
-    if (isRawLocalVideo) {
+    if (isRawVideo) {
       import('../services/videoProcessor').then(({ processTVShowInBackground }) => {
         processTVShowInBackground(tvShow._id, body.hlsUrl);
       });

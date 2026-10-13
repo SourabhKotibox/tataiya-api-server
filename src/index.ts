@@ -12,6 +12,7 @@ import { logger } from './lib/logger';
 import { connectMongoDB } from './lib/mongodb';
 import { connectRedis } from './lib/redis';
 import { seedDatabase } from './lib/seed';
+import { startVideoProcessingWorker } from './services/videoProcessingQueue';
 
 const rawPort = process.env.PORT;
 
@@ -28,6 +29,7 @@ if (Number.isNaN(port) || port <= 0) {
 async function startServer() {
   try {
     await Promise.all([connectMongoDB(), connectRedis()]);
+    await startVideoProcessingWorker();
 
     // Seed database with initial data (Disabled on startup to preserve data)
     // await seedDatabase();
