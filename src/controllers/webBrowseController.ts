@@ -199,12 +199,40 @@ export const getWebBrowse = async (request: FastifyRequest, reply: FastifyReply)
 
     const selectFields = 'title description shortDescription thumbnail bannerImage posterImage year rating ageRating duration imdbRating featured trending isNewContent views genres languages planRequired trailerUrl hlsUrl videoUrl createdAt';
 
-    const [rawItems, total] = await Promise.all([
-      MovieModel.find(filter).sort(sort).skip(skip).limit(limit).select(selectFields).populate('genres', 'name').lean(),
-      MovieModel.countDocuments(filter)
-    ]);
+    const contentModels: { model: any; contentType: 'movie' | 'tvShow' }[] = query.type === 'movie'
+      ? [{ model: MovieModel, contentType: 'movie' }]
+      : [{ model: MovieModel, contentType: 'movie' }, { model: TVShowModel, contentType: 'tvShow' }];
+    const fetchCount = skip + limit;
+    const batches = await Promise.all(contentModels.map(async ({ model, contentType }) => {
+      const [items, total] = await Promise.all([
+        model.find(filter)
+          .sort(sort)
+          .limit(fetchCount)
+          .select(selectFields)
+          .populate('genres', 'name')
+          .lean(),
+        model.countDocuments(filter),
+      ]);
+      return {
+        items: items.map((item: any) => ({ ...item, contentType })),
+        total,
+      };
+    }));
 
-    const items = rawItems.map((item: any) => mapContentItem(item));
+    const allItems = batches.flatMap((batch) => batch.items);
+    const sortEntries = Object.entries(sort) as [string, number][];
+    allItems.sort((a: any, b: any) => {
+      for (const [field, direction] of sortEntries) {
+        if (a[field] === b[field]) continue;
+        if (a[field] == null) return 1;
+        if (b[field] == null) return -1;
+        return (a[field] < b[field] ? -1 : 1) * direction;
+      }
+      return 0;
+    });
+
+    const total = batches.reduce((sum, batch) => sum + batch.total, 0);
+    const items = allItems.slice(skip, skip + limit).map((item: any) => mapContentItem(item));
 
     const responseData = {
       success: true,
