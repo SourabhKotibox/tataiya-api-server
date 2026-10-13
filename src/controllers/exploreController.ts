@@ -178,13 +178,13 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
     const query = request.query as {
       offset?: string;
       limit?: string;
-      sort?: 'new' | 'trending' | 'views' | 'featured';
+      sort?: string;
       seenIds?: string;
     };
 
     const offset = Math.max(0, Number(query.offset || 0));
     const limit = Math.min(10, Math.max(1, Number(query.limit || 5)));
-    const sort = query.sort || 'new';
+    const sort = (query.sort || 'new').toLowerCase().trim();
 
     // Parse already-seen IDs sent by the client (dedup across scroll sessions)
     const seenIds = query.seenIds
@@ -199,7 +199,7 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
     }
 
     let sortBy: any = {};
-    let filter: any = { status: 'published' };
+    let filter: any = { status: { $in: ['published', 'active'] } };
 
     // Exclude content IDs the client has already seen
     if (seenIds.length > 0) {
@@ -213,14 +213,22 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
     }
 
     switch (sort) {
-      case 'new':       sortBy = { createdAt: -1 }; break;
-      case 'trending':  sortBy = { trending: -1, views: -1 }; break;
-      case 'views':     sortBy = { views: -1 }; break;
-      case 'featured':
-        sortBy = { featured: -1, views: -1 };
-        filter = { ...filter, featured: true };
+      case 'new':
+        sortBy = { isNewContent: -1, createdAt: -1 };
         break;
-      default:          sortBy = { createdAt: -1 };
+      case 'trending':
+      case 'hot':
+        sortBy = { trending: -1, views: -1, createdAt: -1 };
+        break;
+      case 'featured':
+        sortBy = { featured: -1, trending: -1, views: -1, createdAt: -1 };
+        break;
+      case 'views':
+      case 'popular':
+        sortBy = { views: -1, createdAt: -1 };
+        break;
+      default:
+        sortBy = { isNewContent: -1, trending: -1, featured: -1, createdAt: -1 };
     }
 
     // Get user's preferred language (defaulting to Hindi if skipped/not set)
@@ -250,7 +258,7 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
     const combinedLimit = offset + fetchLimit;
     
     // Primarily fetch TV Shows (movies as secondary/legacy)
-    const [rawShows, rawMovies] = await Promise.all([
+    let [rawShows, rawMovies] = await Promise.all([
       TVShowModel.find(filter)
         .sort(sortBy)
         .limit(combinedLimit)
@@ -265,29 +273,80 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
         .lean(),
     ]);
 
+    // Safety fallback: if no published shows found, check non-rejected shows
+    if (rawShows.length === 0) {
+      const fallbackFilter = { ...filter, status: { $nin: ['rejected'] } };
+      rawShows = await TVShowModel.find(fallbackFilter)
+        .sort(sortBy)
+        .limit(combinedLimit)
+        .populate('languages', 'name')
+        .populate('genres', 'name')
+        .lean();
+    }
+    if (rawMovies.length === 0) {
+      const fallbackFilter = { ...filter, status: { $nin: ['rejected'] } };
+      rawMovies = await MovieModel.find(fallbackFilter)
+        .sort(sortBy)
+        .limit(combinedLimit)
+        .populate('languages', 'name')
+        .populate('genres', 'name')
+        .lean();
+    }
+
     // Tag items
     const taggedShows = rawShows.map(s => ({ ...s, _type: 'show' }));
     const taggedMovies = rawMovies.map(m => ({ ...m, _type: 'movie' }));
 
     const merged = [...taggedShows, ...taggedMovies];
     
-    // Sort in memory based on the requested sort
-    const sortField = Object.keys(sortBy)[0] || 'createdAt';
-    const sortDir = sortBy[sortField] === -1 ? -1 : 1;
-    
+    // Prioritize TV Shows over Movies, then sort according to selected sort mode
     merged.sort((a: any, b: any) => {
-      // For 'trending', 'views', 'featured', sort by that field, then fallback to createdAt
-      if (sortField !== 'createdAt') {
-         const valA = a[sortField] || 0;
-         const valB = b[sortField] || 0;
-         if (valA !== valB) {
-            return sortDir === -1 ? (valB - valA) : (valA - valB);
-         }
+      // 1. Shows come first before movies
+      const typeA = a._type === 'show' ? 1 : 0;
+      const typeB = b._type === 'show' ? 1 : 0;
+      if (typeA !== typeB) {
+        return typeB - typeA;
       }
-      // Fallback or explicit 'createdAt'
+
+      // 2. Sort by criteria
+      if (sort === 'trending' || sort === 'hot') {
+        const trendA = a.trending ? 1 : 0;
+        const trendB = b.trending ? 1 : 0;
+        if (trendA !== trendB) return trendB - trendA;
+        const viewsA = a.views || 0;
+        const viewsB = b.views || 0;
+        if (viewsA !== viewsB) return viewsB - viewsA;
+      } else if (sort === 'featured') {
+        const featA = a.featured ? 1 : 0;
+        const featB = b.featured ? 1 : 0;
+        if (featA !== featB) return featB - featA;
+        const trendA = a.trending ? 1 : 0;
+        const trendB = b.trending ? 1 : 0;
+        if (trendA !== trendB) return trendB - trendA;
+        const viewsA = a.views || 0;
+        const viewsB = b.views || 0;
+        if (viewsA !== viewsB) return viewsB - viewsA;
+      } else if (sort === 'views' || sort === 'popular') {
+        const viewsA = a.views || 0;
+        const viewsB = b.views || 0;
+        if (viewsA !== viewsB) return viewsB - viewsA;
+      } else {
+        // 'new' or default
+        const newA = a.isNewContent ? 1 : 0;
+        const newB = b.isNewContent ? 1 : 0;
+        if (newA !== newB) return newB - newA;
+        const trendA = a.trending ? 1 : 0;
+        const trendB = b.trending ? 1 : 0;
+        if (trendA !== trendB) return trendB - trendA;
+        const featA = a.featured ? 1 : 0;
+        const featB = b.featured ? 1 : 0;
+        if (featA !== featB) return featB - featA;
+      }
+
+      // 3. Fallback to createdAt (newest first)
       const timeA = new Date(a.createdAt || 0).getTime();
       const timeB = new Date(b.createdAt || 0).getTime();
-      return sortDir === -1 ? (timeB - timeA) : (timeA - timeB);
+      return timeB - timeA;
     });
 
     const rawContents = merged.slice(offset, offset + fetchLimit);
