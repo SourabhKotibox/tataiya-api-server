@@ -136,6 +136,33 @@ test('HLS package uploads every playlist and segment with complete-object verifi
   }
 });
 
+test('HLS package upload reports onProgress incrementally and workspace leaves no local temp files', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'tataiya-hls-prog-test-'));
+  const progressReports: Array<{ uploaded: number; total: number }> = [];
+  const keys = new Map<string, number>();
+  try {
+    const expectedFiles = await makeValidHls(root);
+    validateHlsPackage(root, expectedFiles);
+    const count = await uploadHlsFolderToS3(root, 'hls/episodes/99/job-99', {
+      settings: spacesSettings,
+      uploadFile: async (_filePath, key, _contentType, _cacheControl, size) => {
+        keys.set(key, size);
+      },
+      verifyObject: async (key) => keys.get(key) || 0,
+      onProgress: (uploaded, total) => {
+        progressReports.push({ uploaded, total });
+      },
+    });
+
+    assert.equal(count, expectedFiles.length);
+    assert.equal(progressReports.length, expectedFiles.length);
+    assert.deepEqual(progressReports[progressReports.length - 1], { uploaded: 3, total: 3 });
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+    await assert.rejects(fs.stat(root), /ENOENT/);
+  }
+});
+
 test('partial HLS uploads reject and cannot yield a playable package result', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'tataiya-hls-partial-test-'));
   let uploaded = 0;

@@ -532,9 +532,19 @@ export const reprocessEpisodeHls = async (request: any, reply: any) => {
       return reply.status(404).send({ success: false, error: 'Episode not found' });
     }
 
-    const source = (episode as any).sourceVideoUrl || (episode as any).videoUrl || (episode as any).hlsUrl;
+    let source = [
+      (episode as any).sourceVideoUrl,
+      (episode as any).videoUrl,
+      (episode as any).hlsUrl,
+    ].find((u: any) => typeof u === 'string' && u.trim() && !u.startsWith('blob:') && !/\.m3u8(?:\?|#|$)/i.test(u));
+
+    if (!source && (episode as any).sourceVideoKey) {
+      const { getHlsPublicBaseUrl } = await import('../lib/s3');
+      const base = await getHlsPublicBaseUrl();
+      source = `${base}/${(episode as any).sourceVideoKey}`;
+    }
     
-    if (!source || /.m3u8(?:[?#]|$)/i.test(source)) {
+    if (!source || /\.m3u8(?:\?|#|$)/i.test(source)) {
       return reply.status(400).send({
         success: false,
         error: 'Episode does not have a raw MP4 source video to transcode. Only MP4 videos can be processed into HLS.',
