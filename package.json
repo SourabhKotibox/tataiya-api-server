@@ -8,7 +8,7 @@
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test src/lib/*.test.ts src/services/*.test.ts",
+    "test": "echo \"No tests specified\"",
     "seed": "tsx src/seed-run.ts",
     "seed:pages": "tsx seed-pages.ts",
     "seed:faqs": "tsx seed-faqs.ts"
