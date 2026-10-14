@@ -82,13 +82,20 @@ export const getAllEpisodes = async (request: FastifyRequest, reply: FastifyRepl
       return `${m}m`;
     };
 
-    const data = episodes.map((e) => ({
-      ...e,
-      id: e._id?.toString(),
-      showName: (e.tvShowId as any)?.title || '',
-      showThumbnail: (e.tvShowId as any)?.thumbnail || '',
-      durationFormatted: formatDuration(e.duration),
-    }));
+    const data = episodes.map((e) => {
+      const ps = e.processingStatus || 'ready';
+      return {
+        ...e,
+        id: e._id?.toString(),
+        showName: (e.tvShowId as any)?.title || '',
+        showThumbnail: (e.tvShowId as any)?.thumbnail || '',
+        durationFormatted: formatDuration(e.duration),
+        processingStatus: ps,
+        processingProgress: e.processingProgress ?? (ps === 'ready' ? 100 : 0),
+        processingStep: e.processingStep || (ps === 'ready' ? 'Ready' : ps === 'processing' ? 'Processing...' : ps === 'queued' ? 'Queued' : null),
+        processingEtaSeconds: e.processingEtaSeconds ?? null,
+      };
+    });
 
     return reply.send({
       success: true,
@@ -478,7 +485,7 @@ export const getEpisodeProcessingStatus = async (request: any, reply: any) => {
     const { id } = request.params as { id: string };
 
     const episode = await EpisodeModel.findById(id)
-      .select('processingStatus processingError hlsUrl videoQualities status title')
+      .select('processingStatus processingProgress processingEtaSeconds processingStep processingStartedAt processingError hlsUrl videoQualities status title')
       .lean();
 
     if (!episode) {
@@ -491,18 +498,23 @@ export const getEpisodeProcessingStatus = async (request: any, reply: any) => {
       size:    q.size,
     }));
 
+    const ps = episode.processingStatus || 'ready';
+
     return reply.send({
       success: true,
       data: {
-        title:            episode.title,
-        status:           episode.status,
-        processingStatus: episode.processingStatus || 'queued',
-        processingError:  episode.processingError || null,
-        hlsUrl:           episode.hlsUrl || null,
-        availableQualities: qualities,
-        qualityCount:     qualities.length,
-        isReady:          episode.processingStatus === 'ready',
-        isFailed:         episode.processingStatus === 'failed',
+        title:                episode.title,
+        status:               episode.status,
+        processingStatus:     ps,
+        processingProgress:   (episode as any).processingProgress ?? (ps === 'ready' ? 100 : 0),
+        processingStep:       (episode as any).processingStep || (ps === 'ready' ? 'Ready' : ps === 'processing' ? 'Processing...' : ps === 'queued' ? 'Queued' : null),
+        processingEtaSeconds: (episode as any).processingEtaSeconds ?? null,
+        processingError:      episode.processingError || null,
+        hlsUrl:               episode.hlsUrl || null,
+        availableQualities:   qualities,
+        qualityCount:         qualities.length,
+        isReady:              ps === 'ready',
+        isFailed:             ps === 'failed',
       },
     });
   } catch (error: any) {
@@ -532,6 +544,10 @@ export const reprocessEpisodeHls = async (request: any, reply: any) => {
     await EpisodeModel.findByIdAndUpdate(id, {
       $set: {
         processingStatus: 'queued',
+        processingProgress: 0,
+        processingStep: 'Queued',
+        processingEtaSeconds: null,
+        processingStartedAt: null,
         processingError: null,
         sourceVideoUrl: source,
         videoUrl: source,
@@ -551,6 +567,8 @@ export const reprocessEpisodeHls = async (request: any, reply: any) => {
         title: episode.title,
         sourceVideoUrl: source,
         processingStatus: 'queued',
+        processingProgress: 0,
+        processingStep: 'Queued',
       },
     });
   } catch (error: any) {

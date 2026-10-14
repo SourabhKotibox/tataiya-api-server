@@ -646,6 +646,7 @@ export async function uploadHlsFolderToS3(
     settings?: Awaited<ReturnType<typeof getS3Settings>>;
     uploadFile?: (filePath: string, key: string, contentType: string, cacheControl: string, size: number) => Promise<void>;
     verifyObject?: (key: string) => Promise<number>;
+    onProgress?: (uploadedCount: number, totalCount: number) => void;
   } = {}
 ): Promise<number> {
   const settings = dependencies.settings ? assertSpacesConfigured(dependencies.settings) : await requireSpacesSettings();
@@ -667,6 +668,7 @@ export async function uploadHlsFolderToS3(
 
   const normalizedPrefix = s3Prefix.replace(/^\/+|\/+$/g, '');
   let cursor = 0;
+  let completedCount = 0;
   let failure: unknown;
   const worker = async () => {
     while (!failure) {
@@ -714,7 +716,9 @@ export async function uploadHlsFolderToS3(
             throw new Error(`HLS object verification failed for ${key}: expected ${file.size} bytes, found ${head.ContentLength ?? 0}`);
           }
         }
-        logger.info({ key, uploadedBytes: file.size, contentType }, 'HLS object uploaded and verified');
+        completedCount++;
+        dependencies.onProgress?.(completedCount, files.length);
+        logger.info({ key, uploadedBytes: file.size, contentType, progress: `${completedCount}/${files.length}` }, 'HLS object uploaded and verified');
       } catch (error) {
         failure = error;
       }

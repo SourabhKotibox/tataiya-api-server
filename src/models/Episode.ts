@@ -35,6 +35,10 @@ export interface IEpisode extends Document {
   isLocked: boolean;
   coinsRequired: number;
   processingStatus: 'queued' | 'processing' | 'ready' | 'failed';
+  processingProgress?: number;
+  processingEtaSeconds?: number | null;
+  processingStep?: string | null;
+  processingStartedAt?: Date | null;
   processingError?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -81,6 +85,10 @@ const EpisodeSchema = new Schema<IEpisode>(
       default: 'queued',
       index: true,
     },
+    processingProgress: { type: Number, default: 0 },
+    processingEtaSeconds: { type: Number, default: null },
+    processingStep: { type: String, default: null },
+    processingStartedAt: { type: Date, default: null },
     processingError: String,
   },
   { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } }

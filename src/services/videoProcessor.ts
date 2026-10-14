@@ -69,6 +69,39 @@ const runCommand = (command: string, args: string[]): Promise<string> => {
   });
 };
 
+const runCommandWithProgress = (
+  command: string,
+  args: string[],
+  onProgress?: (data: { timeSeconds: number; speed?: string }) => void
+): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args);
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    child.stderr.on('data', (chunk) => {
+      const text = chunk.toString();
+      stderr += text;
+      if (onProgress) {
+        const timeMatch = text.match(/time=(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)/);
+        const speedMatch = text.match(/speed=\s*([\d\.]+x)/);
+        if (timeMatch) {
+          const hours = parseFloat(timeMatch[1]);
+          const mins = parseFloat(timeMatch[2]);
+          const secs = parseFloat(timeMatch[3]);
+          const totalSecs = hours * 3600 + mins * 60 + secs;
+          onProgress({ timeSeconds: totalSecs, speed: speedMatch ? speedMatch[1] : undefined });
+        }
+      }
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve(stdout.trim());
+      else reject(new Error(stderr.trim() || `${command} exited with code ${code}`));
+    });
+  });
+};
+
 const ensureDir = (dir: string) => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 };
@@ -190,9 +223,11 @@ export const transcodeHlsMultiResolution = async (options: {
   startSeconds?: number;
   duration?: number;
   folderType?: 'movies' | 'episodes' | 'tvshows';
+  onProgress?: (progress: number, step: string, etaSeconds?: number | null) => Promise<void> | void;
 }) => {
-  const { id, sourceVideoUrl, startSeconds, duration, folderType = 'movies' } = options;
+  const { id, sourceVideoUrl, startSeconds, duration, folderType = 'movies', onProgress } = options;
   await requireSpacesSettings();
+  await onProgress?.(5, 'Preparing source video...', null);
   const source = await ensureVideoSourceInSpaces(sourceVideoUrl, folderType, id, options.sourceVideoKey);
   const workspace = await createVideoWorkspace(`${folderType}-${id}-${options.jobId || Date.now()}`);
   const tempSourcePath = path.join(workspace.path, `source${path.extname(source.key) || '.mp4'}`);
@@ -200,10 +235,12 @@ export const transcodeHlsMultiResolution = async (options: {
   const s3Prefix = `hls/${folderType}/${id}/${options.jobId || Date.now()}`;
   try {
     await assertVideoDiskCapacity(source.size * 2, workspace.path);
+    await onProgress?.(8, 'Downloading source video...', null);
     await downloadFromS3ToFile(source.key, tempSourcePath);
     await fs.promises.mkdir(hlsFolder, { recursive: true });
 
     // ── Detect source resolution & duration ────────────────────────────────
+    await onProgress?.(10, 'Analyzing video resolution & duration...', null);
     const [sourceRes, detectedDurationSeconds] = await Promise.all([
       probeResolution(tempSourcePath),
       probeDuration(tempSourcePath),
@@ -219,7 +256,8 @@ export const transcodeHlsMultiResolution = async (options: {
 
     const hlsResult = await transcodeHlsSequential({
       startSeconds,
-      duration,
+      duration: duration || detectedDurationSeconds || undefined,
+      totalDuration: detectedDurationSeconds || duration || 60,
       qualities,
       hlsFolder,
       ffmpegInput: tempSourcePath,
@@ -227,6 +265,7 @@ export const transcodeHlsMultiResolution = async (options: {
       folderType,
       s3Prefix,
       jobId: options.jobId || id,
+      onProgress,
     });
 
     return {
@@ -249,6 +288,7 @@ export const transcodeHlsMultiResolution = async (options: {
 const transcodeHlsSequential = async (opts: {
   startSeconds?: number;
   duration?: number;
+  totalDuration?: number;
   qualities: ReadonlyArray<typeof HLS_QUALITY_LADDER[number]>;
   hlsFolder: string;
   ffmpegInput: string;
@@ -256,12 +296,25 @@ const transcodeHlsSequential = async (opts: {
   folderType?: 'movies' | 'episodes' | 'tvshows';
   s3Prefix: string;
   jobId: string;
+  onProgress?: (progress: number, step: string, etaSeconds?: number | null) => Promise<void> | void;
 }) => {
-  const { startSeconds, duration, qualities, hlsFolder, ffmpegInput, movieId, folderType = 'movies', s3Prefix, jobId } = opts;
+  const { startSeconds, duration, totalDuration = 60, qualities, hlsFolder, ffmpegInput, movieId, folderType = 'movies', s3Prefix, jobId, onProgress } = opts;
+  const startTime = Date.now();
+  const Q = qualities.length;
 
-  for (const q of qualities) {
+  for (let qIdx = 0; qIdx < Q; qIdx++) {
+    const q = qualities[qIdx];
     const qFolder = path.join(hlsFolder, q.name);
     ensureDir(qFolder);
+
+    const basePercent = 10 + (qIdx / Q) * 70;
+    const qWeight = 70 / Q;
+
+    await onProgress?.(
+      Math.round(basePercent),
+      `Transcoding ${q.name} (${qIdx + 1}/${Q})...`,
+      null
+    );
 
     const args: string[] = ['-y'];
     if (startSeconds !== undefined && startSeconds > 0) args.push('-ss', String(startSeconds));
@@ -291,7 +344,17 @@ const transcodeHlsSequential = async (opts: {
       path.join(qFolder, 'playlist.m3u8')
     );
 
-    await runCommand(ffmpegPath, args);
+    await runCommandWithProgress(ffmpegPath, args, (prog) => {
+      const progressInQ = Math.min(0.98, prog.timeSeconds / Math.max(1, totalDuration));
+      const overall = Math.min(80, Math.round(basePercent + progressInQ * qWeight));
+      const elapsed = (Date.now() - startTime) / 1000;
+      let eta: number | null = null;
+      if (overall > 5 && elapsed > 2) {
+        const estTotal = (elapsed / overall) * 100;
+        eta = Math.max(1, Math.round(estTotal - elapsed));
+      }
+      void onProgress?.(overall, `Transcoding ${q.name} (${qIdx + 1}/${Q})...`, eta);
+    });
     logger.info({ quality: q.name }, 'Sequential quality encoded');
     
     // Check quality playlist validity
@@ -311,8 +374,20 @@ const transcodeHlsSequential = async (opts: {
   }
 
   // Rebuild master.m3u8
+  await onProgress?.(81, 'Generating master playlist...', null);
   writeMasterPlaylist(hlsFolder, qualities);
-  const out = await buildSpacesHlsOutput({ qualities, hlsFolder, s3Prefix, jobId });
+  const out = await buildSpacesHlsOutput({
+    qualities,
+    hlsFolder,
+    s3Prefix,
+    jobId,
+    onUploadProgress: (uploaded, total) => {
+      const uploadPercent = Math.min(98, Math.round(82 + (uploaded / Math.max(1, total)) * 16));
+      const elapsed = (Date.now() - startTime) / 1000;
+      const eta = uploadPercent > 10 && elapsed > 2 ? Math.max(1, Math.round(((elapsed / uploadPercent) * 100) - elapsed)) : null;
+      void onProgress?.(uploadPercent, `Uploading HLS files (${uploaded}/${total})...`, eta);
+    },
+  });
   return {
     hlsUrl:         out.masterUrl,
     videoQualities: out.renditions,
@@ -343,8 +418,9 @@ const buildSpacesHlsOutput = async (opts: {
   hlsFolder: string;
   s3Prefix: string;
   jobId: string;
+  onUploadProgress?: (uploaded: number, total: number) => void;
 }) => {
-  const { qualities, hlsFolder, s3Prefix, jobId } = opts;
+  const { qualities, hlsFolder, s3Prefix, jobId, onUploadProgress } = opts;
   const relativeFiles: string[] = [];
   const collectFiles = (directory: string, base = '') => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -358,7 +434,11 @@ const buildSpacesHlsOutput = async (opts: {
   validateHlsPackage(hlsFolder, relativeFiles);
   const queue = await import('./videoProcessingQueue');
   await queue.markVideoJobUploading(jobId);
-  const uploadedCount = await uploadHlsFolderToS3(hlsFolder, s3Prefix);
+  const uploadedCount = await uploadHlsFolderToS3(hlsFolder, s3Prefix, {
+    onProgress: (uploaded, total) => {
+      if (onUploadProgress) onUploadProgress(uploaded, total);
+    },
+  });
   if (uploadedCount !== relativeFiles.length) {
     throw new Error(`Partial HLS package upload: ${uploadedCount}/${relativeFiles.length} objects verified`);
   }
@@ -434,7 +514,30 @@ export const processMovieInBackground = (
 export const processEpisodeHls = async (episodeId: Types.ObjectId | string, sourceVideoUrl: string, jobId = episodeId.toString()) => {
   try {
     const { EpisodeModel } = await import('../models/Episode');
-    await EpisodeModel.findByIdAndUpdate(episodeId, { processingStatus: 'processing' });
+    await EpisodeModel.findByIdAndUpdate(episodeId, {
+      processingStatus: 'processing',
+      processingProgress: 2,
+      processingStep: 'Initializing...',
+      processingEtaSeconds: null,
+      processingStartedAt: new Date(),
+      processingError: null,
+    });
+
+    let lastProgressUpdate = 0;
+    const progressHandler = async (progress: number, step: string, etaSeconds?: number | null) => {
+      const now = Date.now();
+      if (progress < 100 && now - lastProgressUpdate < 800) return;
+      lastProgressUpdate = now;
+      try {
+        await EpisodeModel.findByIdAndUpdate(episodeId, {
+          $set: {
+            processingProgress: Math.min(100, Math.max(0, progress)),
+            processingStep: step,
+            processingEtaSeconds: etaSeconds ?? null,
+          },
+        });
+      } catch {}
+    };
 
     const result = await transcodeHlsMultiResolution({
       id: episodeId.toString(),
@@ -442,6 +545,7 @@ export const processEpisodeHls = async (episodeId: Types.ObjectId | string, sour
       sourceVideoKey: (await EpisodeModel.findById(episodeId).select('sourceVideoKey').lean() as any)?.sourceVideoKey,
       jobId,
       folderType: 'episodes', // Isolated from movies
+      onProgress: progressHandler,
     });
 
     // Build the update object — always set hlsUrl + status
@@ -452,6 +556,9 @@ export const processEpisodeHls = async (episodeId: Types.ObjectId | string, sour
       videoUrl:         result.sourceVideoUrl,
       videoQualities:   result.videoQualities,
       processingStatus: 'ready',
+      processingProgress: 100,
+      processingStep:   'Ready',
+      processingEtaSeconds: 0,
       processingError:  null,
     };
 
@@ -477,11 +584,18 @@ export const processEpisodeHls = async (episodeId: Types.ObjectId | string, sour
     const queue = await import('./videoProcessingQueue');
     if (await queue.ownsVideoJobLease(jobId).catch(() => false)) {
       const { EpisodeModel } = await import('../models/Episode');
-      await EpisodeModel.findByIdAndUpdate(episodeId, { processingStatus: 'failed', processingError: error.message || 'Unknown processing error' });
+      await EpisodeModel.findByIdAndUpdate(episodeId, {
+        processingStatus: 'failed',
+        processingProgress: 0,
+        processingStep: 'Failed',
+        processingEtaSeconds: null,
+        processingError: error.message || 'Unknown processing error',
+      });
     }
     throw error;
   }
 };
+
 
 export const processEpisodeInBackground = (
   episodeId: Types.ObjectId | string,
