@@ -3,7 +3,7 @@ import { webRequestDownload, webGetDownloads, webDeleteDownload } from '../contr
 import { SubscriptionPlanModel } from '../models/SubscriptionPlan';
 import { PlanLimitModel } from '../models/PlanLimit';
 import { SettingsModel } from '../models/Settings';
-import { describePlanPeriod } from '../lib/planPeriod';
+import { websitePlanPeriod } from '../lib/planPeriod';
 
 const webDownloadRoutes: FastifyPluginAsync = async (fastify) => {
   // Public: list active subscription plans — no auth required
@@ -23,21 +23,25 @@ const webDownloadRoutes: FastifyPluginAsync = async (fastify) => {
         success: true,
         data: plans.map((plan) => {
           const lim: any = limitsByPlan.get(plan._id.toString()) || {};
-          const period = describePlanPeriod(plan.duration, plan.durationValue);
+          const period = websitePlanPeriod(plan.duration, plan.durationValue);
           return {
             id: plan._id,
             name: plan.name,
-            // Keep the stored unit so the website still says "3 Months access".
-            duration: plan.duration,
-            durationValue: plan.durationValue,
-            durationUnit: period.durationUnit,
-            billingPeriod: period.billingPeriod,
-            period: period.period,
-            periodLabel: period.periodLabel,
-            planDuration: period.planDuration,
-            packageDuration: period.packageDuration,
-            validity: period.validity,
-            type: period.type,
+            // Website modal prints "/ {duration}" and "Valid for {durationValue} {duration}".
+            // duration is the slash label ("3 Months", "Year"). durationValue is only the
+            // leading count when that label does not already include it, so a 3-month plan
+            // does not render "Valid for 3 3 Months".
+            duration: period.suffix,
+            durationLabel: period.suffix,
+            durationUnit: period.unit,
+            durationValue: period.count === 1 ? period.count : '',
+            billingCount: period.count,
+            period: period.suffix,
+            periodLabel: period.suffix,
+            planDuration: period.suffix,
+            packageDuration: period.suffix,
+            validity: period.count === 1 ? `${period.count} ${period.unit}` : period.suffix,
+            type: period.suffix,
             price: plan.price,
             discount: plan.discount,
             totalPrice: plan.totalPrice,

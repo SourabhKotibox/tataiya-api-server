@@ -88,3 +88,41 @@ export function describePlanPeriod(duration: string, durationValue: number): Pla
     months,
   };
 }
+
+export type WebsitePlanPeriod = {
+  /** Text after the price slash: "Month", "3 Months", "6 Months", "Year". */
+  suffix: string;
+  /** Unit only, plural when the count is not 1: "Month", "Months", "Year". */
+  unit: string;
+  /** Count shown in "Valid for N Unit". 12 months is 1 year. */
+  count: number;
+};
+
+/**
+ * Labels for the website plan modal.
+ * The modal prints `plan.duration` after the price and
+ * `plan.durationValue + plan.duration` in "Valid for …".
+ * One month stays "Month" and one year stays "Year" (no leading 1).
+ * Longer periods include the count: "3 Months", "6 Months".
+ */
+export function websitePlanPeriod(duration: string, durationValue: number): WebsitePlanPeriod {
+  const normalized = String(duration || 'Month').trim().toLowerCase();
+  let count = Math.max(1, Math.trunc(Number(durationValue) || 1));
+  const embedded = normalized.match(/(\d+)\s*-?\s*(day|week|month|year)/);
+  if (embedded && count === 1) count = parseInt(embedded[1], 10);
+  if (normalized.includes('month') && count >= 28 && count <= 31 && !embedded) count = 1;
+
+  let kind: 'day' | 'week' | 'month' | 'year' = 'month';
+  if (normalized.includes('day')) kind = 'day';
+  else if (normalized.includes('week')) kind = 'week';
+  else if (normalized.includes('year') || normalized.includes('annual')) kind = 'year';
+  else if (count === 12) kind = 'year';
+
+  if (kind === 'year' && !normalized.includes('year') && !normalized.includes('annual')) count = 1;
+
+  const singular = { day: 'Day', week: 'Week', month: 'Month', year: 'Year' }[kind];
+  const plural = { day: 'Days', week: 'Weeks', month: 'Months', year: 'Years' }[kind];
+  const unit = count === 1 ? singular : plural;
+  const suffix = count === 1 ? singular : `${count} ${plural}`;
+  return { suffix, unit, count };
+}
