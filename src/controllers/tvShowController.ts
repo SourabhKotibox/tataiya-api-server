@@ -331,6 +331,9 @@ export const createTVShow = async (request: FastifyRequest, reply: FastifyReply)
         processTVShowInBackground(tvShow._id, body.hlsUrl);
       });
     }
+    import('../services/videoProcessor').then(({ queueContentTrailer }) => {
+      queueContentTrailer('tvShowTrailer', tvShow._id, trailer);
+    }).catch((error) => logger.error({ error }, 'Failed to queue TV show trailer HLS'));
 
     // Trigger push notification to all users — only if published
     if (tvShow.status === 'published') {
@@ -450,6 +453,11 @@ export const updateTVShow = async (request: FastifyRequest, reply: FastifyReply)
       import('../services/videoProcessor').then(({ processTVShowInBackground }) => {
         processTVShowInBackground(tvShow._id, body.hlsUrl);
       });
+    }
+    if (body.trailerUrl) {
+      import('../services/videoProcessor').then(({ queueContentTrailer }) => {
+        queueContentTrailer('tvShowTrailer', tvShow._id, body.trailerUrl);
+      }).catch((error) => logger.error({ error }, 'Failed to queue TV show trailer HLS'));
     }
 
     // Sync HLS qualities from disk if they exist but were not submitted/saved properly in update form

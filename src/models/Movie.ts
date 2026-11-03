@@ -11,6 +11,9 @@ export interface IMovie extends Document {
   bannerImage?: string;
   posterImage?: string;
   trailerUrl?: string;
+  trailerSourceUrl?: string;
+  trailerHlsStatus?: 'queued' | 'processing' | 'ready' | 'failed';
+  trailerHlsError?: string;
   sourceVideoUrl?: string;
   sourceVideoKey?: string;
   genres: mongoose.Types.ObjectId[];
@@ -83,6 +86,9 @@ const MovieSchema = new Schema<IMovie>(
     bannerImage: String,
     posterImage: String,
     trailerUrl: String,
+    trailerSourceUrl: String,
+    trailerHlsStatus: { type: String, enum: ['queued', 'processing', 'ready', 'failed'] },
+    trailerHlsError: String,
     sourceVideoUrl: String,
     sourceVideoKey: String,
     genres: [{ type: Schema.Types.ObjectId, ref: 'Genre' }],

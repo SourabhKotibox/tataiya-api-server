@@ -8,6 +8,7 @@ import { VideoProcessingJobModel, VideoJobEntityType, IVideoProcessingJob } from
 import { abortStaleSpacesMultipartUploads, ensureVideoSourceInSpaces, getHlsPublicBaseUrl, requireSpacesSettings } from '../lib/s3';
 import { cleanupLegacyVideoArtifacts, cleanupStaleVideoWorkspaces, getAvailableVideoJobConcurrency, getVideoJobLimits } from '../lib/videoJobRuntime';
 import { logger } from '../lib/logger';
+import { isRemoteHls, isTranscodableVideo } from '../lib/hlsEncode';
 
 const LEASE_MS = Math.max(60_000, Number(process.env.VIDEO_JOB_LEASE_MS) || 5 * 60_000);
 const POLL_MS = Math.max(500, Number(process.env.VIDEO_JOB_POLL_MS) || 3_000);
@@ -29,7 +30,14 @@ const entityModels = {
   movie: MovieModel,
   tvShow: TVShowModel,
   episode: EpisodeModel,
+  movieTrailer: MovieModel,
+  episodeTrailer: EpisodeModel,
+  tvShowTrailer: TVShowModel,
 } as const;
+
+function isTrailerJob(entityType: VideoJobEntityType): boolean {
+  return entityType.endsWith('Trailer');
+}
 
 function sourceKeyFromUrl(sourceUrl: string): string | undefined {
   if (!sourceUrl) return undefined;
@@ -115,6 +123,11 @@ export async function ownsVideoJobLease(jobId: Types.ObjectId | string): Promise
 
 async function setEntityStatus(job: IVideoProcessingJob, status: 'queued' | 'processing' | 'ready' | 'failed', error?: string) {
   const Model = entityModels[job.entityType] as any;
+  if (isTrailerJob(job.entityType)) {
+    const trailerStatus = status === 'ready' ? 'ready' : status === 'queued' ? 'queued' : status === 'failed' ? 'failed' : 'processing';
+    await Model.findByIdAndUpdate(job.entityId, { $set: { trailerHlsStatus: trailerStatus, trailerHlsError: error || null } });
+    return;
+  }
   const fields = job.entityType === 'mediaFile'
     ? { hlsStatus: status === 'ready' ? 'completed' : status === 'queued' ? 'pending' : status, hlsError: error || null }
     : { processingStatus: status, processingError: error || null };
@@ -164,7 +177,7 @@ async function runJob(job: IVideoProcessingJob): Promise<void> {
     if (job.hlsOnly) {
       await setEntityStatus(job, 'processing');
       const { migrateLegacyHlsToSpaces } = await import('./legacyHlsMigration');
-      await migrateLegacyHlsToSpaces(job.entityType, job.entityId.toString(), job.sourceUrl, job._id.toString());
+      await migrateLegacyHlsToSpaces(job.entityType as 'mediaFile' | 'movie' | 'tvShow' | 'episode', job.entityId.toString(), job.sourceUrl, job._id.toString());
       await assertVideoJobLease(job._id);
       await VideoProcessingJobModel.findByIdAndUpdate(job._id, {
         $set: { status: 'completed', completedAt: new Date(), leaseOwner: null, leaseExpiresAt: null, lastError: null },
@@ -177,10 +190,12 @@ async function runJob(job: IVideoProcessingJob): Promise<void> {
       job.entityId.toString(),
       job.sourceKey || entity.sourceVideoKey || entity.s3Key
     );
-    const sourceFields = job.entityType === 'mediaFile'
-      ? { s3Key: source.key, filePath: source.key, url: source.url, storageType: 'spaces' }
-      : { sourceVideoKey: source.key, sourceVideoUrl: source.url, videoUrl: source.url };
-    await EntityModel.findByIdAndUpdate(job.entityId, { $set: sourceFields });
+    if (!isTrailerJob(job.entityType)) {
+      const sourceFields = job.entityType === 'mediaFile'
+        ? { s3Key: source.key, filePath: source.key, url: source.url, storageType: 'spaces' }
+        : { sourceVideoKey: source.key, sourceVideoUrl: source.url, videoUrl: source.url };
+      await EntityModel.findByIdAndUpdate(job.entityId, { $set: sourceFields });
+    }
     await VideoProcessingJobModel.findByIdAndUpdate(job._id, {
       $set: { sourceKey: source.key, sourceUrl: source.url },
     });
@@ -204,7 +219,10 @@ async function runJob(job: IVideoProcessingJob): Promise<void> {
     }
 
     await setEntityStatus(job, 'processing');
-    if (job.entityType === 'mediaFile') {
+    if (isTrailerJob(job.entityType)) {
+      const processor = await import('./videoProcessor');
+      await processor.processTrailerHls(job.entityType as 'movieTrailer' | 'episodeTrailer' | 'tvShowTrailer', job.entityId, source.url, job._id.toString());
+    } else if (job.entityType === 'mediaFile') {
       const { runTranscodeToHls } = await import('../lib/hlsTranscoder');
       await runTranscodeToHls(job.entityId.toString(), source.url, 'spaces', job._id.toString());
     } else {
@@ -319,4 +337,99 @@ async function enqueueLegacyQueuedJobs(): Promise<void> {
     });
   }
   if (pending.length) logger.info({ scanned: pending.length }, 'Scanned legacy video processing states for recovery');
+}
+
+export type MissingHlsCounts = {
+  movies: number;
+  episodes: number;
+  tvShows: number;
+  trailers: number;
+  mediaFiles: number;
+  requeuedFailed: number;
+};
+
+function firstSource(doc: any): string | undefined {
+  const candidates = [doc?.sourceVideoKey, doc?.sourceVideoUrl, doc?.videoUrl, doc?.s3Key, doc?.url, doc?.filePath];
+  return candidates.find((value) => isTranscodableVideo(value));
+}
+
+async function enqueueTrailer(entityType: 'movieTrailer' | 'episodeTrailer' | 'tvShowTrailer', doc: any, counts: MissingHlsCounts) {
+  const trailer = doc.trailerSourceUrl || doc.trailerUrl;
+  if (!isTranscodableVideo(trailer) || isRemoteHls(doc.trailerUrl)) return;
+  await enqueueVideoProcessingJob(entityType, doc._id, trailer);
+  counts.trailers++;
+}
+
+/**
+ * Queue HLS for every movie, series, episode, trailer, and library video
+ * that does not already have a remote playlist. Safe to run more than once.
+ */
+export async function enqueueMissingHlsJobs(options: { retryFailed?: boolean } = {}): Promise<MissingHlsCounts> {
+  await requireSpacesSettings();
+  const counts: MissingHlsCounts = { movies: 0, episodes: 0, tvShows: 0, trailers: 0, mediaFiles: 0, requeuedFailed: 0 };
+
+  if (options.retryFailed) {
+    const retried = await VideoProcessingJobModel.updateMany(
+      { status: 'failed' },
+      { $set: { status: 'queued', attempts: 0, nextAttemptAt: new Date(), lastError: null, leaseOwner: null, leaseExpiresAt: null, completedAt: null } }
+    );
+    counts.requeuedFailed = retried.modifiedCount || 0;
+  }
+
+  const [movies, shows, episodes, mediaFiles] = await Promise.all([
+    MovieModel.find({}).select('hlsUrl sourceVideoUrl videoUrl sourceVideoKey trailerUrl trailerSourceUrl').lean(),
+    TVShowModel.find({}).select('hlsUrl sourceVideoUrl videoUrl sourceVideoKey trailerUrl trailerSourceUrl').lean(),
+    EpisodeModel.find({}).select('hlsUrl sourceVideoUrl videoUrl sourceVideoKey trailerUrl trailerSourceUrl').lean(),
+    MediaFileModel.find({ fileType: /^video\// }).select('url filePath s3Key hlsStatus hlsMasterPlaylistUrl').lean(),
+  ]);
+
+  for (const movie of movies) {
+    const source = firstSource(movie);
+    if (source && !isRemoteHls(movie.hlsUrl)) {
+      await enqueueVideoProcessingJob('movie', movie._id, source, movie.sourceVideoKey);
+      counts.movies++;
+    } else if (movie.hlsUrl && /\.m3u8(?:[?#]|$)/i.test(movie.hlsUrl) && !isRemoteHls(movie.hlsUrl)) {
+      await enqueueVideoProcessingJob('movie', movie._id, movie.hlsUrl, undefined, { transcodeRequired: false, hlsOnly: true });
+      counts.movies++;
+    }
+    await enqueueTrailer('movieTrailer', movie, counts);
+  }
+
+  for (const show of shows) {
+    const source = firstSource(show);
+    if (source && !isRemoteHls(show.hlsUrl)) {
+      await enqueueVideoProcessingJob('tvShow', show._id, source, show.sourceVideoKey);
+      counts.tvShows++;
+    }
+    await enqueueTrailer('tvShowTrailer', show, counts);
+  }
+
+  for (const episode of episodes) {
+    const source = firstSource(episode);
+    if (source && !isRemoteHls(episode.hlsUrl)) {
+      await enqueueVideoProcessingJob('episode', episode._id, source, episode.sourceVideoKey);
+      counts.episodes++;
+    } else if (episode.hlsUrl && /\.m3u8(?:[?#]|$)/i.test(episode.hlsUrl) && !isRemoteHls(episode.hlsUrl)) {
+      await enqueueVideoProcessingJob('episode', episode._id, episode.hlsUrl, undefined, { transcodeRequired: false, hlsOnly: true });
+      counts.episodes++;
+    }
+    await enqueueTrailer('episodeTrailer', episode, counts);
+  }
+
+  for (const file of mediaFiles) {
+    if (isRemoteHls(file.hlsMasterPlaylistUrl)) continue;
+    if (file.hlsMasterPlaylistUrl && /\.m3u8(?:[?#]|$)/i.test(file.hlsMasterPlaylistUrl)) {
+      await enqueueVideoProcessingJob('mediaFile', file._id, file.hlsMasterPlaylistUrl, file.s3Key, { transcodeRequired: false, hlsOnly: true });
+      counts.mediaFiles++;
+      continue;
+    }
+    const source = firstSource(file);
+    if (!source) continue;
+    await enqueueVideoProcessingJob('mediaFile', file._id, source, file.s3Key);
+    counts.mediaFiles++;
+  }
+
+  void pumpVideoProcessingQueue();
+  logger.info(counts, 'Queued content missing remote HLS');
+  return counts;
 }

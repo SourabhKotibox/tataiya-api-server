@@ -11,6 +11,9 @@ export interface ITVShow extends Document {
   bannerImage?: string;
   posterImage?: string;
   trailerUrl?: string;
+  trailerSourceUrl?: string;
+  trailerHlsStatus?: 'queued' | 'processing' | 'ready' | 'failed';
+  trailerHlsError?: string;
   sourceVideoUrl?: string;
   sourceVideoKey?: string;
   contentType?: 'tvShow';
@@ -85,6 +88,9 @@ const TVShowSchema = new Schema<ITVShow>(
     bannerImage: String,
     posterImage: String,
     trailerUrl: String,
+    trailerSourceUrl: String,
+    trailerHlsStatus: { type: String, enum: ['queued', 'processing', 'ready', 'failed'] },
+    trailerHlsError: String,
     sourceVideoUrl: String,
     sourceVideoKey: String,
     contentType: { type: String, default: 'tvShow' },

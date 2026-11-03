@@ -209,6 +209,9 @@ export const createMovie = async (request: FastifyRequest, reply: FastifyReply) 
         processMovieInBackground(movie._id, body.hlsUrl);
       });
     }
+    import('../services/videoProcessor').then(({ queueContentTrailer }) => {
+      queueContentTrailer('movieTrailer', movie._id, trailer);
+    }).catch((error) => logger.error({ error }, 'Failed to queue movie trailer HLS'));
 
     return reply.status(201).send({
       success: true,
@@ -313,6 +316,11 @@ export const updateMovie = async (request: FastifyRequest, reply: FastifyReply) 
       import('../services/videoProcessor').then(({ processMovieInBackground }) => {
         processMovieInBackground(movie._id, body.hlsUrl);
       });
+    }
+    if (body.trailerUrl) {
+      import('../services/videoProcessor').then(({ queueContentTrailer }) => {
+        queueContentTrailer('movieTrailer', movie._id, body.trailerUrl);
+      }).catch((error) => logger.error({ error }, 'Failed to queue movie trailer HLS'));
     }
 
     // Sync HLS qualities from disk if they exist but were not submitted/saved properly in update form

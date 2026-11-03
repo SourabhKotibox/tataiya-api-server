@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { logger } from './logger';
+import { workspaceIsStale } from './hlsEncode';
 import { VideoProcessingJobModel } from '../models/VideoProcessingJob';
 import { EpisodeModel } from '../models/Episode';
 import { MediaFileModel } from '../models/MediaFile';
@@ -19,10 +20,12 @@ export function getVideoTempRoot(): string {
 export function getVideoJobLimits() {
   return {
     maxConcurrentJobs: Math.max(1, Number(process.env.VIDEO_MAX_CONCURRENT_JOBS) || 1),
-    minFreeBytes: Math.max(256 * 1024 * 1024, Number(process.env.VIDEO_MIN_FREE_DISK_BYTES) || 2 * 1024 * 1024 * 1024),
-    minJobDiskBytes: Math.max(1024 * 1024 * 1024, Number(process.env.VIDEO_MIN_JOB_DISK_BYTES) || 10 * 1024 * 1024 * 1024),
-    minMemoryPerJobBytes: Math.max(512 * 1024 * 1024, Number(process.env.VIDEO_MIN_MEMORY_PER_JOB_BYTES) || 3 * 1024 * 1024 * 1024),
-    cleanupAgeMs: Math.max(60 * 60 * 1000, Number(process.env.VIDEO_TEMP_TTL_HOURS || 24) * 60 * 60 * 1000),
+    // Headroom for the temp source + one rendition. The old 12GB gate paused the queue on a full disk and nothing transcoded.
+    minFreeBytes: Math.max(128 * 1024 * 1024, Number(process.env.VIDEO_MIN_FREE_DISK_BYTES) || 512 * 1024 * 1024),
+    minJobDiskBytes: Math.max(64 * 1024 * 1024, Number(process.env.VIDEO_MIN_JOB_DISK_BYTES) || 256 * 1024 * 1024),
+    minMemoryPerJobBytes: Math.max(256 * 1024 * 1024, Number(process.env.VIDEO_MIN_MEMORY_PER_JOB_BYTES) || 512 * 1024 * 1024),
+    cleanupAgeMs: Math.max(60 * 1000, Number(process.env.VIDEO_TEMP_TTL_HOURS || 24) * 60 * 60 * 1000),
+    staleHeartbeatMs: Math.max(60_000, Number(process.env.VIDEO_TEMP_STALE_MS) || 15 * 60_000),
   };
 }
 
@@ -32,9 +35,9 @@ export async function getAvailableVideoJobConcurrency(): Promise<number> {
   await fs.promises.mkdir(root, { recursive: true });
   const stats = await fs.promises.statfs(root);
   const freeBytes = Number(stats.bavail) * Number(stats.bsize);
-  const diskSlots = Math.floor(Math.max(0, freeBytes - limits.minFreeBytes) / limits.minJobDiskBytes);
+  if (freeBytes < limits.minFreeBytes) return 0;
   const memorySlots = Math.floor(os.freemem() / limits.minMemoryPerJobBytes);
-  return Math.max(0, Math.min(limits.maxConcurrentJobs, diskSlots, memorySlots));
+  return Math.max(0, Math.min(limits.maxConcurrentJobs, memorySlots));
 }
 
 export function estimateHlsOutputBytes(
@@ -130,7 +133,8 @@ export async function cleanupStaleVideoWorkspaces(now = Date.now()): Promise<{ r
       marker = JSON.parse(await fs.promises.readFile(markerPath, 'utf8'));
     } catch {
       const stat = await fs.promises.stat(workspace).catch(() => null);
-      if (!stat || now - stat.mtimeMs < ttl) continue;
+      const unmarkedTtl = Math.min(ttl, getVideoJobLimits().staleHeartbeatMs);
+      if (!stat || now - stat.mtimeMs < unmarkedTtl) continue;
       const dirBytes = await getDirectoryBytes(workspace);
       await fs.promises.rm(workspace, { recursive: true, force: true });
       removed++;
@@ -138,12 +142,17 @@ export async function cleanupStaleVideoWorkspaces(now = Date.now()): Promise<{ r
       continue;
     }
 
-    const age = now - Number(marker.heartbeatAt || marker.startedAt || 0);
-    if (marker.hostname === HOSTNAME && pidIsAlive(Number(marker.pid))) {
+    const limits = getVideoJobLimits();
+    const stale = workspaceIsStale(marker, now, {
+      ttlMs: ttl,
+      staleHeartbeatMs: limits.staleHeartbeatMs,
+      pidAlive: marker.hostname === HOSTNAME && pidIsAlive(Number(marker.pid)),
+      hostname: HOSTNAME,
+    });
+    if (!stale) {
       skippedActive++;
       continue;
     }
-    if (age < ttl) continue;
 
     const dirBytes = await getDirectoryBytes(workspace);
     await fs.promises.rm(workspace, { recursive: true, force: true });
@@ -233,14 +242,16 @@ export async function cleanupLegacyVideoArtifacts(now = Date.now()): Promise<{ r
   for (const uploadsRoot of new Set(uploadsRoots)) {
     const tempRoot = path.join(uploadsRoot, 'temp');
     const hlsRoot = path.join(uploadsRoot, 'hls');
-    const removeIfStale = async (target: string, identity?: string) => {
+    const removeIfStale = async (target: string, identity?: string, maxAgeMs = ttl) => {
       const safeTarget = path.resolve(target);
       if (!safeTarget.startsWith(`${uploadsRoot}${path.sep}`)) return;
       if (identity && activeIds.has(identity)) { skippedActive++; return; }
       if (identity && path.resolve(target).includes(`${path.sep}hls${path.sep}`) && !remoteHlsIds.has(identity)) { skippedActive++; return; }
+      const publishedRemotely = !!(identity && remoteHlsIds.has(identity) && path.resolve(target).includes(`${path.sep}hls${path.sep}`));
       let summary: Awaited<ReturnType<typeof getTreeSummary>>;
       try { summary = await getTreeSummary(safeTarget); } catch { return; }
-      if (summary.newestMtime && now - summary.newestMtime < ttl) return;
+      const minAge = publishedRemotely ? 0 : maxAgeMs;
+      if (!publishedRemotely && summary.newestMtime && now - summary.newestMtime < minAge) return;
       for (const file of summary.files) {
         if (await isOpenByAnyProcess(file)) { skippedActive++; return; }
       }
@@ -251,8 +262,7 @@ export async function cleanupLegacyVideoArtifacts(now = Date.now()): Promise<{ r
 
     if (await fs.promises.stat(tempRoot).catch(() => null)) {
       for (const entry of await fs.promises.readdir(tempRoot, { withFileTypes: true })) {
-        if (!entry.isFile()) continue;
-        await removeIfStale(path.join(tempRoot, entry.name));
+        await removeIfStale(path.join(tempRoot, entry.name), undefined, 60 * 60 * 1000);
       }
     }
 
@@ -260,7 +270,7 @@ export async function cleanupLegacyVideoArtifacts(now = Date.now()): Promise<{ r
       for (const typeEntry of await fs.promises.readdir(hlsRoot, { withFileTypes: true })) {
         if (!typeEntry.isDirectory()) continue;
         const typePath = path.join(hlsRoot, typeEntry.name);
-        const isTypedRoot = ['movies', 'episodes', 'tvshows'].includes(typeEntry.name);
+        const isTypedRoot = ['movies', 'episodes', 'tvshows', 'trailers', 'media'].includes(typeEntry.name);
         if (isTypedRoot) {
           for (const idEntry of await fs.promises.readdir(typePath, { withFileTypes: true })) {
             if (idEntry.isDirectory()) await removeIfStale(path.join(typePath, idEntry.name), idEntry.name);
