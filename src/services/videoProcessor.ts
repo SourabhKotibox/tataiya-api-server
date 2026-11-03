@@ -1,4 +1,3 @@
-import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import { Types } from 'mongoose';
@@ -8,6 +7,8 @@ import { MovieModel } from '../models/Movie';
 import { logger } from '../lib/logger';
 import { deleteS3Prefix, downloadFromS3ToFile, ensureVideoSourceInSpaces, getHlsPublicBaseUrl, requireSpacesSettings, uploadHlsFolderToS3, validateHlsPackage } from '../lib/s3';
 import { assertVideoDiskCapacity, createVideoWorkspace, estimateHlsOutputBytes } from '../lib/videoJobRuntime';
+import { ffmpegThreadCount, spawnCaptured } from '../lib/spawnCapture';
+import { ffmpegAudioArgs, selectHlsLadder, type HlsRendition } from '../lib/hlsEncode';
 
 const ffmpegPath = ffmpegInstaller?.path || 'ffmpeg';
 const ffprobePath = ffprobeInstaller?.path || 'ffprobe';
@@ -15,91 +16,35 @@ const ffprobePath = ffprobeInstaller?.path || 'ffprobe';
 // ─────────────────────────────────────────────────────────────────────────────
 // All 7 quality renditions with Netflix-grade bitrate settings
 // ─────────────────────────────────────────────────────────────────────────────
-export const HLS_QUALITY_LADDER = [
-  { name: '144p',  width: 256,  height: 144,  bitrate: '100k',  maxrate: '110k',   bufsize: '150k',   audioBitrate: '48k'  },
-  { name: '240p',  width: 426,  height: 240,  bitrate: '400k',  maxrate: '428k',   bufsize: '600k',   audioBitrate: '64k'  },
-  { name: '360p',  width: 640,  height: 360,  bitrate: '800k',  maxrate: '856k',   bufsize: '1200k',  audioBitrate: '96k'  },
-  { name: '480p',  width: 854,  height: 480,  bitrate: '1400k', maxrate: '1498k',  bufsize: '2100k',  audioBitrate: '128k' },
-  { name: '720p',  width: 1280, height: 720,  bitrate: '2800k', maxrate: '2996k',  bufsize: '4200k',  audioBitrate: '128k' },
-  { name: '1080p', width: 1920, height: 1080, bitrate: '5000k', maxrate: '5350k',  bufsize: '7500k',  audioBitrate: '192k' },
-  { name: '1440p', width: 2560, height: 1440, bitrate: '8000k', maxrate: '8560k',  bufsize: '12000k', audioBitrate: '192k' },
-  { name: '2160p', width: 3840, height: 2160, bitrate: '16000k',maxrate: '17120k', bufsize: '24000k', audioBitrate: '192k' },
-] as const;
-
-export type QualityName = typeof HLS_QUALITY_LADDER[number]['name'];
-
-// Bandwidth values for master.m3u8 BANDWIDTH attribute (bits/s)
-const BANDWIDTH_MAP: Record<QualityName, number> = {
-  '144p':  100_000,
-  '240p':  400_000,
-  '360p':  800_000,
-  '480p':  1_400_000,
-  '720p':  2_800_000,
-  '1080p': 5_000_000,
-  '1440p': 8_000_000,
-  '2160p': 16_000_000,
-};
-
-const RESOLUTION_MAP: Record<QualityName, string> = {
-  '144p':  '256x144',
-  '240p':  '426x240',
-  '360p':  '640x360',
-  '480p':  '854x480',
-  '720p':  '1280x720',
-  '1080p': '1920x1080',
-  '1440p': '2560x1440',
-  '2160p': '3840x2160',
-};
+export const HLS_QUALITY_LADDER = selectHlsLadder(1080);
+export type QualityName = HlsRendition['name'];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
-const runCommand = (command: string, args: string[]): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args);
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) resolve(stdout.trim());
-      else reject(new Error(stderr.trim() || `${command} exited with code ${code}`));
-    });
-  });
+const runCommand = async (command: string, args: string[]): Promise<string> => {
+  const result = await spawnCaptured(command, args);
+  if (result.code === 0) return result.stdout.trim();
+  throw new Error(result.stderr.trim() || `${command} exited with code ${result.code}`);
 };
 
-const runCommandWithProgress = (
+const runCommandWithProgress = async (
   command: string,
   args: string[],
   onProgress?: (data: { timeSeconds: number; speed?: string }) => void
 ): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args);
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
-    child.stderr.on('data', (chunk) => {
-      const text = chunk.toString();
-      stderr += text;
-      if (onProgress) {
-        const timeMatch = text.match(/time=(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)/);
-        const speedMatch = text.match(/speed=\s*([\d\.]+x)/);
-        if (timeMatch) {
-          const hours = parseFloat(timeMatch[1]);
-          const mins = parseFloat(timeMatch[2]);
-          const secs = parseFloat(timeMatch[3]);
-          const totalSecs = hours * 3600 + mins * 60 + secs;
-          onProgress({ timeSeconds: totalSecs, speed: speedMatch ? speedMatch[1] : undefined });
-        }
-      }
-    });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) resolve(stdout.trim());
-      else reject(new Error(stderr.trim() || `${command} exited with code ${code}`));
-    });
+  const result = await spawnCaptured(command, args, (text) => {
+    if (!onProgress) return;
+    const timeMatch = text.match(/time=(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)/);
+    const speedMatch = text.match(/speed=\s*([\d.]+x)/);
+    if (!timeMatch) return;
+    const hours = parseFloat(timeMatch[1]);
+    const mins = parseFloat(timeMatch[2]);
+    const secs = parseFloat(timeMatch[3]);
+    onProgress({ timeSeconds: hours * 3600 + mins * 60 + secs, speed: speedMatch ? speedMatch[1] : undefined });
   });
+  if (result.code === 0) return result.stdout.trim();
+  throw new Error(result.stderr.trim() || `${command} exited with code ${result.code}`);
 };
 
 const ensureDir = (dir: string) => {
@@ -201,15 +146,21 @@ export const probeVideoDuration = probeDuration;
  * Filter quality ladder to only include renditions whose height
  * does not exceed the source video's height. Always guarantees at least 1 rendition.
  */
-const filterQualitiesByResolution = (
-  sourceHeight: number
-) => {
-  const maxH = sourceHeight || 1080;
-  let matches = HLS_QUALITY_LADDER.filter((q) => q.height <= maxH);
-  if (matches.length === 0) {
-    matches = [HLS_QUALITY_LADDER[0]]; // fallback to 144p
+const filterQualitiesByResolution = (sourceHeight: number) => selectHlsLadder(sourceHeight);
+
+const probeAudioCodec = async (inputPath: string): Promise<string | null> => {
+  try {
+    const output = await runCommand(ffprobePath, [
+      '-v', 'error',
+      '-select_streams', 'a:0',
+      '-show_entries', 'stream=codec_name',
+      '-of', 'csv=p=0',
+      inputPath,
+    ]);
+    return output.trim() || null;
+  } catch {
+    return null;
   }
-  return matches;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -222,7 +173,8 @@ export const transcodeHlsMultiResolution = async (options: {
   jobId?: string;
   startSeconds?: number;
   duration?: number;
-  folderType?: 'movies' | 'episodes' | 'tvshows';
+  folderType?: 'movies' | 'episodes' | 'tvshows' | 'trailers';
+  outputPrefix?: string;
   onProgress?: (progress: number, step: string, etaSeconds?: number | null) => Promise<void> | void;
 }) => {
   const { id, sourceVideoUrl, startSeconds, duration, folderType = 'movies', onProgress } = options;
@@ -232,7 +184,7 @@ export const transcodeHlsMultiResolution = async (options: {
   const workspace = await createVideoWorkspace(`${folderType}-${id}-${options.jobId || Date.now()}`);
   const tempSourcePath = path.join(workspace.path, `source${path.extname(source.key) || '.mp4'}`);
   const hlsFolder = path.join(workspace.path, 'hls');
-  const s3Prefix = `hls/${folderType}/${id}/${options.jobId || Date.now()}`;
+  const s3Prefix = options.outputPrefix || `hls/${folderType}/${id}/${options.jobId || Date.now()}`;
   try {
     await assertVideoDiskCapacity(source.size * 2, workspace.path);
     await onProgress?.(8, 'Downloading source video...', null);
@@ -246,8 +198,9 @@ export const transcodeHlsMultiResolution = async (options: {
       probeDuration(tempSourcePath),
     ]);
     const sourceHeight = sourceRes?.height ?? 1080;
+    const audioCodec = await probeAudioCodec(tempSourcePath);
     const qualities = filterQualitiesByResolution(sourceHeight);
-    const estimatedHlsBytes = estimateHlsOutputBytes(detectedDurationSeconds || 0, qualities.map((quality) => ({ bitrate: quality.bitrate, audioBitrate: quality.audioBitrate })));
+    const estimatedHlsBytes = estimateHlsOutputBytes(detectedDurationSeconds || 0, qualities.map((quality) => ({ bitrate: quality.bitrate, audioBitrate: '128k' })));
     await assertVideoDiskCapacity(estimatedHlsBytes, workspace.path);
     logger.info(
       { id, sourceHeight, detectedDurationSeconds, qualityCount: qualities.length, mode: 'sequential-safe' },
@@ -260,6 +213,7 @@ export const transcodeHlsMultiResolution = async (options: {
       totalDuration: detectedDurationSeconds || duration || 60,
       qualities,
       hlsFolder,
+      audioCodec,
       ffmpegInput: tempSourcePath,
       movieId: id,
       folderType,
@@ -278,7 +232,7 @@ export const transcodeHlsMultiResolution = async (options: {
     await deleteS3Prefix(s3Prefix).catch((cleanupError) => logger.error({ cleanupError, id, s3Prefix }, 'Failed to remove partial HLS upload'));
     throw error;
   } finally {
-    await workspace.cleanup();
+    await workspace.cleanup().catch((cleanupError) => logger.error({ cleanupError, id }, 'Failed to remove HLS temp workspace'));
   }
 };
 
@@ -293,12 +247,13 @@ const transcodeHlsSequential = async (opts: {
   hlsFolder: string;
   ffmpegInput: string;
   movieId: string;
-  folderType?: 'movies' | 'episodes' | 'tvshows';
+  folderType?: 'movies' | 'episodes' | 'tvshows' | 'trailers';
+  audioCodec?: string | null;
   s3Prefix: string;
   jobId: string;
   onProgress?: (progress: number, step: string, etaSeconds?: number | null) => Promise<void> | void;
 }) => {
-  const { startSeconds, duration, totalDuration = 60, qualities, hlsFolder, ffmpegInput, movieId, folderType = 'movies', s3Prefix, jobId, onProgress } = opts;
+  const { startSeconds, duration, totalDuration = 60, qualities, hlsFolder, ffmpegInput, audioCodec, s3Prefix, jobId, onProgress } = opts;
   const startTime = Date.now();
   const Q = qualities.length;
 
@@ -316,35 +271,36 @@ const transcodeHlsSequential = async (opts: {
       null
     );
 
-    const args: string[] = ['-y'];
-    if (startSeconds !== undefined && startSeconds > 0) args.push('-ss', String(startSeconds));
-    args.push('-i', ffmpegInput);
-    if (duration !== undefined && duration > 0) args.push('-t', String(duration));
+    const buildArgs = (copyAudio: boolean) => {
+      const args: string[] = ['-y'];
+      if (startSeconds !== undefined && startSeconds > 0) args.push('-ss', String(startSeconds));
+      args.push('-i', ffmpegInput);
+      if (duration !== undefined && duration > 0) args.push('-t', String(duration));
+      args.push(
+        '-threads', ffmpegThreadCount(),
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-g', '48',
+        '-sc_threshold', '0',
+        '-keyint_min', '48',
+        '-vf', `scale=w='if(gt(iw,ih),-2,${q.height})':h='if(gt(iw,ih),${q.height},-2)'`,
+        '-b:v', q.bitrate,
+        '-maxrate', q.maxrate,
+        '-bufsize', q.bufsize,
+        '-profile:v', 'main',
+        ...(copyAudio ? ffmpegAudioArgs(audioCodec) : ffmpegAudioArgs(null)),
+        '-f', 'hls',
+        '-hls_time', '6',
+        '-hls_playlist_type', 'vod',
+        '-hls_segment_filename', path.join(qFolder, 'segment_%03d.ts'),
+        path.join(qFolder, 'playlist.m3u8'),
+      );
+      return args;
+    };
 
-    args.push(
-      '-threads',      '0',
-      '-c:v',          'libx264',
-      '-preset',       'ultrafast',
-      '-g',            '48',
-      '-sc_threshold', '0',
-      '-keyint_min',   '48',
-      '-vf',           `scale=w='if(gt(iw,ih),-2,${q.height})':h='if(gt(iw,ih),${q.height},-2)'`,
-      '-b:v',          q.bitrate,
-      '-maxrate',      q.maxrate,
-      '-bufsize',      q.bufsize,
-      '-profile:v',    'main',
-      '-c:a',          'aac',
-      '-b:a',          '128k',
-      '-ac',           '2',
-      '-ar',           '48000',
-      '-f',            'hls',
-      '-hls_time',     '4',
-      '-hls_playlist_type', 'vod',
-      '-hls_segment_filename', path.join(qFolder, 'segment_%03d.ts'),
-      path.join(qFolder, 'playlist.m3u8')
-    );
-
-    await runCommandWithProgress(ffmpegPath, args, (prog) => {
+    const copyAudio = ffmpegAudioArgs(audioCodec)[1] === 'copy';
+    try {
+      await runCommandWithProgress(ffmpegPath, buildArgs(copyAudio), (prog) => {
       const progressInQ = Math.min(0.98, prog.timeSeconds / Math.max(1, totalDuration));
       const overall = Math.min(80, Math.round(basePercent + progressInQ * qWeight));
       const elapsed = (Date.now() - startTime) / 1000;
@@ -355,6 +311,17 @@ const transcodeHlsSequential = async (opts: {
       }
       void onProgress?.(overall, `Transcoding ${q.name} (${qIdx + 1}/${Q})...`, eta);
     });
+    } catch (error) {
+      if (!copyAudio) throw error;
+      logger.warn({ error, quality: q.name }, 'AAC copy failed; re-encoding audio');
+      await fs.promises.rm(qFolder, { recursive: true, force: true });
+      ensureDir(qFolder);
+      await runCommandWithProgress(ffmpegPath, buildArgs(false), (prog) => {
+        const progressInQ = Math.min(0.98, prog.timeSeconds / Math.max(1, totalDuration));
+        const overall = Math.min(80, Math.round(basePercent + progressInQ * qWeight));
+        void onProgress?.(overall, `Transcoding ${q.name} (${qIdx + 1}/${Q})...`, null);
+      });
+    }
     logger.info({ quality: q.name }, 'Sequential quality encoded');
     
     // Check quality playlist validity
@@ -403,10 +370,8 @@ const writeMasterPlaylist = (
 ) => {
   const masterLines = ['#EXTM3U', '#EXT-X-VERSION:3'];
   for (const q of qualities) {
-    const bandwidth  = BANDWIDTH_MAP[q.name as QualityName];
-    const resolution = RESOLUTION_MAP[q.name as QualityName];
     masterLines.push(
-      `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${resolution},NAME="${q.name}"`,
+      `#EXT-X-STREAM-INF:BANDWIDTH=${q.bandwidth},RESOLUTION=${q.width}x${q.height},NAME="${q.name}"`,
       `${q.name}/playlist.m3u8`,
     );
   }
@@ -445,7 +410,7 @@ const buildSpacesHlsOutput = async (opts: {
   const baseUrl = await getHlsPublicBaseUrl();
   const masterUrl = `${baseUrl}/${s3Prefix}/master.m3u8`;
   const renditions = qualities.map((q) => ({
-    quality: q.name as QualityName,
+    quality: q.name,
     url: `${baseUrl}/${s3Prefix}/${q.name}/playlist.m3u8`,
     size: (q as any).folderSize || getFolderSize(path.join(hlsFolder, q.name)),
   }));
@@ -648,6 +613,65 @@ export const processTVShowInBackground = (tvShowId: Types.ObjectId | string, sou
     .then(({ enqueueVideoProcessingJob }) => enqueueVideoProcessingJob('tvShow', tvShowId, sourceVideoUrl))
     .catch((error) => logger.error({ error, tvShowId }, 'Failed to persist TV-show HLS job'));
 };
+
+export const processTrailerHls = async (
+  entityType: 'movieTrailer' | 'episodeTrailer' | 'tvShowTrailer',
+  entityId: Types.ObjectId | string,
+  sourceVideoUrl: string,
+  jobId: string,
+) => {
+  const kind = entityType === 'episodeTrailer' ? 'episode' : entityType === 'tvShowTrailer' ? 'tvshow' : 'movie';
+  const Model: any = entityType === 'episodeTrailer'
+    ? (await import('../models/Episode')).EpisodeModel
+    : entityType === 'tvShowTrailer'
+      ? (await import('../models/TVShow')).TVShowModel
+      : MovieModel;
+
+  await Model.findByIdAndUpdate(entityId, { trailerHlsStatus: 'processing', trailerHlsError: null });
+  try {
+    const existing = await Model.findById(entityId).select('trailerUrl trailerSourceUrl').lean() as any;
+    const result = await transcodeHlsMultiResolution({
+      id: String(entityId),
+      sourceVideoUrl,
+      jobId,
+      folderType: 'trailers',
+      outputPrefix: `hls/trailers/${kind}/${entityId}/${jobId}`,
+    });
+    const previous = String(existing?.trailerSourceUrl || existing?.trailerUrl || sourceVideoUrl);
+    await Model.findByIdAndUpdate(entityId, {
+      trailerUrl: result.hlsUrl,
+      trailerSourceUrl: previous,
+      trailerHlsStatus: 'ready',
+      trailerHlsError: null,
+    });
+    if (previous && previous !== result.hlsUrl) {
+      const { BannerModel } = await import('../models/Banner');
+      await BannerModel.updateMany({ trailerUrl: previous }, { $set: { trailerUrl: result.hlsUrl } });
+    }
+    logger.info({ entityType, entityId, hlsUrl: result.hlsUrl }, 'Trailer HLS published to Spaces');
+  } catch (error: any) {
+    await Model.findByIdAndUpdate(entityId, {
+      trailerHlsStatus: 'failed',
+      trailerHlsError: error?.message || 'Trailer HLS failed',
+    });
+    throw error;
+  }
+};
+
+export function queueContentTrailer(
+  entityType: 'movieTrailer' | 'episodeTrailer' | 'tvShowTrailer',
+  id: Types.ObjectId | string,
+  url?: string | null,
+) {
+  void import('../lib/hlsEncode')
+    .then(({ isRemoteHls, isTranscodableVideo }) => {
+      if (!url || !isTranscodableVideo(url) || isRemoteHls(url)) return;
+      return import('./videoProcessingQueue').then(({ enqueueVideoProcessingJob }) =>
+        enqueueVideoProcessingJob(entityType, id, url)
+      );
+    })
+    .catch((error) => logger.error({ error, entityType, id }, 'Failed to queue trailer HLS'));
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Auto-detect HLS qualities already on disk and sync them to MongoDB

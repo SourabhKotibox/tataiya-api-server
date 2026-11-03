@@ -314,6 +314,8 @@ const readBannerMultipart = async (request: FastifyRequest): Promise<BannerMulti
           const uploadedFile = await uploadHandler.saveFileFromPart(part, request as any, 'BANNER');
           data.thumbnail = uploadedFile.url;
           data.thumbnailFilePath = uploadedFile.filePath;
+        } else {
+          await uploadHandler.discardFilePart(part);
         }
       }
     }

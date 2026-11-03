@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import { Transform } from 'stream';
+import { PassThrough, Transform } from 'stream';
+import { pipeline } from 'stream/promises';
 import type { FastifyRequest } from 'fastify';
 import { MediaFileModel } from '../models/MediaFile';
 import { MediaFolderModel } from '../models/MediaFolder';
@@ -136,6 +137,34 @@ export const validateFileType = (fileName: string, uploadType: UploadType): bool
   return (typeConfig.allowedExts as readonly string[]).includes(ext);
 };
 
+const MAX_IN_MEMORY_UPLOAD_BYTES = 32 * 1024 * 1024;
+
+/** Swallow stream errors and drain a multipart file the route is not going to store. */
+export const discardFilePart = async (part: { file?: any } | null | undefined) => {
+  const file = part?.file;
+  if (!file || typeof file.resume !== 'function') return;
+  file.on?.('error', () => {});
+  if (file.readableEnded || file.destroyed) return;
+  file.resume();
+  await new Promise<void>((resolve) => {
+    const done = () => resolve();
+    file.on?.('end', done);
+    file.on?.('close', done);
+    file.on?.('error', done);
+    setTimeout(done, 30_000).unref?.();
+  });
+};
+
+const guardFileStream = (part: { file?: any } | null | undefined) => {
+  const file = part?.file;
+  if (!file || file.__tataiyaGuarded) return;
+  file.__tataiyaGuarded = true;
+  // An 'error' with no listener crashes the process (EventEmitter).
+  file.on?.('error', (err: Error) => {
+    logger.warn({ err: err?.message }, 'Multipart file stream error');
+  });
+};
+
 // Helper to check if a file is a video based on file extension or mimetype
 const isVideoFile = (fileName: string, mimeType: string): boolean => {
   const videoExtensions = ['.mp4', '.webm', '.mov', '.avi', '.mkv', '.flv', '.m4v', '.mpeg', '.mpg'];
@@ -144,6 +173,32 @@ const isVideoFile = (fileName: string, mimeType: string): boolean => {
 };
 
 export const saveFileFromPart = async (
+  part: any,
+  request: FastifyRequest,
+  uploadType: UploadType,
+  customDir?: string,
+  options?: {
+    trackInMediaLibrary?: boolean;
+    source?: string;
+    sourceId?: string;
+    folderId?: string;
+    contentName?: string;
+    contentType?: string;
+  }
+): Promise<UploadedFileInfo> => {
+  guardFileStream(part);
+  try {
+    return await saveFileFromPartUnsafe(part, request, uploadType, customDir, options);
+  } catch (error) {
+    const file = part?.file;
+    if (file && !file.readableEnded && !file.destroyed) {
+      await discardFilePart(part).catch(() => {});
+    }
+    throw error;
+  }
+};
+
+const saveFileFromPartUnsafe = async (
   part: any,
   request: FastifyRequest,
   uploadType: UploadType,
@@ -201,15 +256,26 @@ export const saveFileFromPart = async (
       let uploaded = false;
       const hashingStream = new Transform({
         transform(chunk: Buffer, _encoding, callback) {
-          fileSize += chunk.length;
-          hash.update(chunk);
-          callback(null, chunk);
+          try {
+            fileSize += chunk.length;
+            hash.update(chunk);
+            callback(null, chunk);
+          } catch (err) {
+            callback(err as Error);
+          }
         },
       });
+      hashingStream.on('error', () => {});
+      const pass = new PassThrough();
+      pass.on('error', () => {});
+      const uploadPromise = uploadReadableToS3(s3Key, pass, mimeType, {
+        cacheControl: 'public, max-age=31536000, immutable',
+      });
       try {
-        const publicUrl = await uploadReadableToS3(s3Key, part.file.pipe(hashingStream), mimeType, {
-          cacheControl: 'public, max-age=31536000, immutable',
-        });
+        const [, publicUrl] = await Promise.all([
+          pipeline(part.file, hashingStream, pass),
+          uploadPromise,
+        ]);
         uploaded = true;
         if (part.file.truncated) throw new Error('Video upload exceeded the configured multipart file-size limit.');
         if (fileSize === 0) throw new Error('Uploaded video is empty.');
@@ -304,8 +370,15 @@ export const saveFileFromPart = async (
     }
 
     const chunks: Buffer[] = [];
+    let buffered = 0;
     for await (const chunk of part.file) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      buffered += buf.length;
+      if (buffered > MAX_IN_MEMORY_UPLOAD_BYTES) {
+        await discardFilePart(part);
+        throw new Error('File is too large to buffer in memory. Upload videos with a video extension so they stream straight to storage.');
+      }
+      chunks.push(buf);
     }
     let buffer = Buffer.concat(chunks);
     let finalKey = s3Key;
@@ -428,11 +501,10 @@ export const saveFileFromPart = async (
   const relativeFilePath = path.join(targetDir, fileName);
   const fullFilePath = path.join(UPLOADS_ROOT, relativeFilePath);
 
-  return new Promise(async (resolve, reject) => {
+  return new Promise((resolve, reject) => {
     const writeStream = fs.createWriteStream(fullFilePath);
-    part.file.pipe(writeStream);
-
-    writeStream.on('finish', async () => {
+    writeStream.on('error', reject);
+    pipeline(part.file, writeStream).then(async () => {
       try {
         const stats = fs.statSync(fullFilePath);
         const computeFileHash = (filePath: string): Promise<string> =>
@@ -560,9 +632,7 @@ export const saveFileFromPart = async (
       } catch (err) {
         reject(err);
       }
-    });
-
-    writeStream.on('error', reject);
+    }).catch(reject);
   });
 };
 
@@ -600,6 +670,7 @@ export default {
   generateUniqueFileName,
   validateFileType,
   saveFileFromPart,
+  discardFilePart,
   deleteUploadedFile,
   formatFileSize
 };

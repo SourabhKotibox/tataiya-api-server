@@ -197,6 +197,9 @@ export const createEpisode = async (request: FastifyRequest, reply: FastifyReply
         });
       });
     }
+    import('../services/videoProcessor').then(({ queueContentTrailer }) => {
+      queueContentTrailer('episodeTrailer', episode._id as Types.ObjectId, body.trailerUrl);
+    }).catch((error) => logger.error({ error, episodeId: episode._id }, 'Failed to queue episode trailer HLS'));
 
     return reply.status(201).send({
       success: true,
@@ -297,6 +300,11 @@ export const updateEpisode = async (request: FastifyRequest, reply: FastifyReply
           processingError: error instanceof Error ? error.message : 'Failed to load episode HLS processor',
         });
       });
+    }
+    if (body.trailerUrl) {
+      import('../services/videoProcessor').then(({ queueContentTrailer }) => {
+        queueContentTrailer('episodeTrailer', new Types.ObjectId(id), body.trailerUrl);
+      }).catch((error) => logger.error({ error, episodeId: id }, 'Failed to queue episode trailer HLS'));
     }
 
     // Sync HLS qualities from disk if they exist but were not submitted/saved properly in update form

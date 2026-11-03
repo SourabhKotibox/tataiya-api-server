@@ -1,6 +1,6 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
 
-export type VideoJobEntityType = 'mediaFile' | 'movie' | 'tvShow' | 'episode';
+export type VideoJobEntityType = 'mediaFile' | 'movie' | 'tvShow' | 'episode' | 'movieTrailer' | 'episodeTrailer' | 'tvShowTrailer';
 export type VideoJobStatus = 'queued' | 'processing' | 'uploading' | 'completed' | 'failed';
 
 export interface IVideoProcessingJob extends Document {
@@ -27,7 +27,7 @@ export interface IVideoProcessingJob extends Document {
 
 const VideoProcessingJobSchema = new Schema<IVideoProcessingJob>(
   {
-    entityType: { type: String, enum: ['mediaFile', 'movie', 'tvShow', 'episode'], required: true },
+    entityType: { type: String, enum: ['mediaFile', 'movie', 'tvShow', 'episode', 'movieTrailer', 'episodeTrailer', 'tvShowTrailer'], required: true },
     entityId: { type: Schema.Types.ObjectId, required: true },
     sourceUrl: { type: String, required: true },
     sourceKey: String,

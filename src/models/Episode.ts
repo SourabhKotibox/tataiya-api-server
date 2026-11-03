@@ -22,6 +22,9 @@ export interface IEpisode extends Document {
     size: number;
   }>;
   trailerUrl?: string;
+  trailerSourceUrl?: string;
+  trailerHlsStatus?: 'queued' | 'processing' | 'ready' | 'failed';
+  trailerHlsError?: string;
   duration?: number;
   status?: string;
   views: number;
@@ -68,6 +71,9 @@ const EpisodeSchema = new Schema<IEpisode>(
       },
     ],
     trailerUrl: String,
+    trailerSourceUrl: String,
+    trailerHlsStatus: { type: String, enum: ['queued', 'processing', 'ready', 'failed'] },
+    trailerHlsError: String,
     duration: Number,
     views: { type: Number, default: 0 },
     likes: { type: Number, default: 0 },

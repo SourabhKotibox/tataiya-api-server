@@ -54,6 +54,7 @@ import adRoutes from './ad';
 import adminNotificationsRoutes from './adminNotifications';
 import reviewRoutes from './review';
 import viewsRoutes from './views';
+import videoJobRoutes from './videoJobs';
 
 const router: FastifyPluginAsync = async (fastify) => {
   fastify.register(viewsRoutes);
@@ -80,6 +81,7 @@ const router: FastifyPluginAsync = async (fastify) => {
   fastify.register(categoriesRoutes, { prefix: '/categories' });
   fastify.register(notificationTemplatesRoutes, { prefix: '/notification-templates' });
   fastify.register(mediaRoutes, { prefix: '/media' });
+  fastify.register(videoJobRoutes, { prefix: '/video-jobs' });
   fastify.register(appSettingsRoutes, { prefix: '/app-settings' });
   fastify.register(dashboardRoutes);
   fastify.register(movieRoutes, { prefix: '/movies' });

@@ -15,6 +15,7 @@ import {
 import { buildShareUrl } from '../lib/config';
 import { calculateEpisodeStartSeconds } from '../lib/videoPreview';
 import { toAbsoluteUrl, resolveVideoStream } from '../lib/urlHelper';
+import { loadFirstEpisodes, playbackForDocuments } from '../lib/bannerPlayback';
 
 // How many extra items to fetch per page to survive deduplication filtering
 const FETCH_MULTIPLIER = 4;
@@ -371,26 +372,9 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
       if (uniqueContents.length >= limit) break;
     }
 
-    // ── Pre-fetch Episode 1 for TV Shows without trailers ─────────────────────
-    const { EpisodeModel } = await import('../models/Episode');
+    // ── Pre-fetch Episode 1 (trailer, else the episode file) for series/TV ──
     const showIds = uniqueContents.filter(c => c._type === 'show').map(c => c._id);
-    const episodesMap = new Map<string, any>();
-
-    if (showIds.length > 0) {
-      const firstEpisodes = await EpisodeModel.find({
-        tvShowId: { $in: showIds },
-      })
-        .sort({ season: 1, episode: 1 })
-        .select('tvShowId trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds videoQualities isFree')
-        .lean();
-
-      for (const ep of firstEpisodes) {
-        const sId = ep.tvShowId?.toString();
-        if (sId && !episodesMap.has(sId)) {
-          episodesMap.set(sId, ep);
-        }
-      }
-    }
+    const episodesMap = await loadFirstEpisodes(showIds);
 
     // ── Fetch like & wishlist status for unique items ────────────────────────
     const uniqueIds = uniqueContents.map(c => c._id);
@@ -414,7 +398,7 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
     }
 
     // ── Map to response ───────────────────────────────────────────────────────
-    const items = uniqueContents.map(content => {
+    const items = await Promise.all(uniqueContents.map(async (content) => {
       const cid = content._id.toString();
       const likeCount: number = content.likes || 0;
       const isLikedByUser: boolean = likedContentIdSet.has(cid);
@@ -422,7 +406,7 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
       const isShow = content._type === 'show';
       const epDoc = isShow ? episodesMap.get(cid) : null;
 
-      return mapContentItem(
+      const mapped = mapContentItem(
         request,
         content,
         likeCount,
@@ -432,7 +416,15 @@ export const getExplore = async (request: FastifyRequest, reply: FastifyReply) =
         epDoc,
         isWishlisted,
       );
-    });
+      // Overwrite every video field the app player reads with an absolute
+      // trailer (or episode/movie file). mapContentItem's URLs are relative
+      // /uploads keys for Spaces objects, which ExoPlayer cannot open.
+      const playback = await playbackForDocuments(request, {
+        content,
+        episode: epDoc,
+      });
+      return { ...mapped, ...playback };
+    }));
 
     // nextOffset moves forward by the full raw fetch batch size (not just unique count)
     const nextOffset = offset + rawContents.length;

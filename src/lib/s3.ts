@@ -6,6 +6,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Upload } from '@aws-sdk/lib-storage';
 import { Readable } from 'stream';
 import { logger } from './logger';
+import { hlsUploadConcurrency } from './hlsEncode';
 import { SettingsModel } from '../models/Settings';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -724,7 +725,7 @@ export async function uploadHlsFolderToS3(
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(3, files.length) }, worker));
+  await Promise.all(Array.from({ length: hlsUploadConcurrency(files.length) }, worker));
   if (failure) throw failure;
 
   logger.info({ s3Prefix: normalizedPrefix, uploadCount: files.length, totalBytes: files.reduce((sum, file) => sum + file.size, 0) }, 'Verified HLS upload to DigitalOcean Spaces');

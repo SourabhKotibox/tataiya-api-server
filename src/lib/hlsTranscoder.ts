@@ -1,7 +1,6 @@
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import ffprobeInstaller from '@ffprobe-installer/ffprobe';
-import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -18,6 +17,8 @@ import {
 } from './s3';
 import { probeVideo, extractPosterFrame, sanitizeFfmpegError } from './videoProbe';
 import { assertVideoDiskCapacity, createVideoWorkspace, estimateHlsOutputBytes } from './videoJobRuntime';
+import { ffmpegThreadCount, spawnCaptured } from './spawnCapture';
+import { ffmpegAudioArgs, selectHlsLadder } from './hlsEncode';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -96,7 +97,7 @@ export async function enrichVideoMetadata(mediaFileId: string): Promise<void> {
   } catch (err) {
     logger.warn({ err: sanitizeFfmpegError(err), mediaFileId }, 'Video metadata enrich failed');
   } finally {
-    await workspace.cleanup();
+    await workspace.cleanup().catch((cleanupError) => logger.error({ cleanupError }, 'Failed to remove video temp workspace'));
   }
 }
 
@@ -137,11 +138,18 @@ export async function runTranscodeToHls(
     }
     await mediaFile.save();
 
-    const applicablePresets = QUALITY_PRESETS.filter((preset) => preset.height <= Math.max(info.height || 360, 360));
+    const applicablePresets = selectHlsLadder(info.height).map((preset) => ({
+      quality: preset.name,
+      height: preset.height,
+      bitrate: Number(preset.bitrate.replace(/k$/i, '')),
+      width: preset.width,
+      maxrate: preset.maxrate,
+      bufsize: preset.bufsize,
+    }));
     const estimatedHlsBytes = estimateHlsOutputBytes(info.duration, applicablePresets.map((preset) => ({ bitrate: `${preset.bitrate}k`, audioBitrate: '96k' })));
     await assertVideoDiskCapacity(estimatedHlsBytes, workspace.path);
     const qualities: IHlsQuality[] = [];
-    const runPreset = async (preset: (typeof QUALITY_PRESETS)[number]) => {
+    const runPreset = async (preset: (typeof applicablePresets)[number]) => {
       const qualityDir = path.join(outputDir, preset.quality);
       await fs.promises.mkdir(qualityDir, { recursive: true });
       const playlistPath = path.join(qualityDir, 'index.m3u8');
@@ -152,8 +160,8 @@ export async function runTranscodeToHls(
           '-y',
           '-i', tempSourcePath,
           '-c:v', 'libx264',
-          '-preset', 'ultrafast',
-          '-threads', '0',
+          '-preset', 'veryfast',
+          '-threads', ffmpegThreadCount(),
           '-g', '48',
           '-sc_threshold', '0',
           '-keyint_min', '48',
@@ -162,21 +170,17 @@ export async function runTranscodeToHls(
           '-hls_segment_filename', segmentPattern,
           '-vf', `scale=-2:${preset.height}`,
           '-b:v', `${preset.bitrate}k`,
-          '-maxrate', `${preset.bitrate * 1.5}k`,
-          '-bufsize', `${preset.bitrate * 2}k`,
-          '-c:a', 'aac',
-          '-b:a', '96k',
-          '-ac', '2',
+          '-maxrate', preset.maxrate,
+          '-bufsize', preset.bufsize,
+          ...ffmpegAudioArgs(info.audioCodec),
           playlistPath,
         ];
-        const child = spawn(ffmpegInstaller.path || 'ffmpeg', args);
-        let stderr = '';
-        child.stderr.on('data', (d) => { stderr += d.toString(); });
-        child.on('error', reject);
-        child.on('close', (code) => {
-          if (code === 0) resolve(null);
-          else reject(new Error(stderr.trim() || `ffmpeg exited with code ${code}`));
-        });
+        spawnCaptured(ffmpegInstaller.path || 'ffmpeg', args)
+          .then((result) => {
+            if (result.code === 0) resolve(null);
+            else reject(new Error(result.stderr.trim() || `ffmpeg exited with code ${result.code}`));
+          })
+          .catch(reject);
       });
 
       if (!fs.existsSync(playlistPath)) throw new Error(`HLS playlist was not generated for ${preset.quality}`);
@@ -253,7 +257,7 @@ export async function runTranscodeToHls(
     }
     throw error;
   } finally {
-    await workspace.cleanup();
+    await workspace.cleanup().catch((cleanupError) => logger.error({ cleanupError }, 'Failed to remove video temp workspace'));
   }
 }
 

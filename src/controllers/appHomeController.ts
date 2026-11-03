@@ -15,8 +15,8 @@ import mongoose from 'mongoose';
 
 import { buildShareUrl } from '../lib/config';
 import { normalizePlanKey } from './subscriptionController';
-import { calculateEpisodeStartSeconds } from '../lib/videoPreview';
-import { toAbsoluteUrl, resolveVideoStream, findDiskHlsMaster } from '../lib/urlHelper';
+import { toAbsoluteUrl, resolveVideoStream } from '../lib/urlHelper';
+import { contentIsSeries, loadFirstEpisodes, playbackForDocuments } from '../lib/bannerPlayback';
 
 // ── URL Resolver ─────────────────────────────────────────────────────────────
 // Converts any stored path/key to a proper full HTTPS URL
@@ -160,49 +160,16 @@ const populateBannersContent = async (banners: any[], request?: FastifyRequest |
     contentMap.set(show._id.toString(), { ...show, type: 'tvShow', contentType: 'tvShow' });
   }
 
-  // Pre-fetch Episode 1 trailer or video for TV shows
-  const showIds = shows.map((s) => s._id);
-  if (showIds.length > 0) {
-    try {
-      const { EpisodeModel } = await import('../models/Episode');
-      const firstEpisodes = await EpisodeModel.find({ tvShowId: { $in: showIds } })
-        .sort({ season: 1, episode: 1 })
-        .select('tvShowId trailerUrl hlsUrl sourceVideoUrl videoUrl duration sourceStartSeconds videoQualities')
-        .lean();
-      for (const ep of firstEpisodes) {
-        const sId = ep.tvShowId?.toString();
-        if (sId && contentMap.has(sId)) {
-          const show = contentMap.get(sId);
-          const hasShowTrailer = !!show.trailerUrl;
-          const hasEpTrailer = !!ep.trailerUrl;
-          const epStream = resolveVideoStream(ep, request, 'episodes');
-          const epVideo = epStream.hlsUrl || epStream.streamUrl || ep.hlsUrl || ep.sourceVideoUrl || ep.videoUrl;
-          const epDuration = ep.duration;
-          const epStart = ep.sourceStartSeconds || calculateEpisodeStartSeconds(epDuration);
-
-          if (!hasShowTrailer) {
-            if (hasEpTrailer) {
-              show.trailerUrl = ep.trailerUrl;
-              show.startSeconds = 0;
-            } else if (epVideo) {
-              show.trailerUrl = epVideo;
-              show.videoUrl = epVideo;
-              show.hlsUrl = epStream.hlsUrl || epVideo;
-              show.startSeconds = epStart;
-              show.isEpisodePreview = true;
-              show.videoQualities = epStream.videoQualities;
-            }
-          }
-          if (!show.videoUrl && epVideo) {
-            show.videoUrl = epVideo;
-            show.hlsUrl = epStream.hlsUrl || epVideo;
-            if (!show.videoQualities?.length) show.videoQualities = epStream.videoQualities;
-          }
-        }
-      }
-    } catch (e) {
-      logger.error({ e }, 'Error fetching episode trailer for app banners');
+  // Episode 1 is the series/TV fallback when the show itself has no trailer.
+  // Match string ids too — some episode rows stored tvShowId as a string.
+  try {
+    const episodes = await loadFirstEpisodes(shows.map((s) => s._id));
+    for (const [showId, episode] of episodes) {
+      const show = contentMap.get(showId);
+      if (show) show._previewEpisode = episode;
     }
+  } catch (e) {
+    logger.error({ e }, 'Error fetching episode trailer for app banners');
   }
 
   for (const banner of banners) {
@@ -228,7 +195,7 @@ const populateBannersContent = async (banners: any[], request?: FastifyRequest |
 };
 
 // Helper function to map banner — resolveUrl converts all image paths to full URLs
-const mapBanner = (
+const mapBanner = async (
   banner: any,
   resolveUrl: (url: string | null | undefined) => string | null,
   likeCount = 0,
@@ -239,17 +206,15 @@ const mapBanner = (
 ) => {
   const content = banner.contentId;
   const thumbnail = resolveUrl(content?.thumbnail || banner.imageUrl);
-  const isShow = banner.contentType === 'tvShow' || content?.contentType === 'tvShow' || content?.type === 'tvShow' || !!content?.totalSeasons;
-  const folderType = isShow ? 'episodes' : 'movies';
-
-  const contentStream = resolveVideoStream(content, request, folderType);
-  const bannerStream = resolveVideoStream(banner, request, folderType);
-
-  const trailerUrl = resolveUrl(banner.trailerUrl || content?.trailerUrl || null);
-  const streamUrl = trailerUrl || bannerStream.streamUrl || contentStream.streamUrl;
-  const hlsUrl = bannerStream.hlsUrl || contentStream.hlsUrl || streamUrl;
-  const videoQualities = (bannerStream.videoQualities?.length ? bannerStream.videoQualities : contentStream.videoQualities) || [];
-  const startSeconds = banner.startSeconds || content?.startSeconds || 0;
+  const isShow = contentIsSeries(banner, content);
+  const playback = await playbackForDocuments(request, {
+    banner,
+    content,
+    episode: isShow ? content?._previewEpisode : null,
+  });
+  const contentMapped = content
+    ? { ...mapContentItem(content, resolveUrl, likeCount, isLikedByUser, userPlan, isWishlisted), ...playback }
+    : undefined;
 
   return {
     id: banner._id.toString(),
@@ -259,23 +224,11 @@ const mapBanner = (
     thumbnail,
     imageUrl: resolveUrl(banner.imageUrl),
     mobileImageUrl: resolveUrl(banner.mobileImageUrl || banner.imageUrl),
-    trailerUrl: trailerUrl || streamUrl,
-    videoUrl: streamUrl,
-    streamUrl,
-    hlsUrl,
-    videoQualities,
-    startSeconds,
-    startAt: startSeconds,
-    startTime: startSeconds,
-    seekTo: startSeconds,
-    sourceStartSeconds: startSeconds,
-    previewStartTime: startSeconds,
-    previewStartSeconds: startSeconds,
-    isEpisodePreview: !!(banner.isEpisodePreview || content?.isEpisodePreview),
+    ...playback,
     ctaText: banner.ctaText,
     ctaLink: banner.ctaLink,
     contentId: banner.contentId?._id?.toString(),
-    content: content ? mapContentItem(content, resolveUrl, likeCount, isLikedByUser, userPlan, isWishlisted) : undefined,
+    content: contentMapped,
     type: banner.type || 'hero',
     contentType: banner.contentType || content?.contentType || 'tvShow',
     position: banner.position,
@@ -602,6 +555,7 @@ export const getAppBanners = async (request: FastifyRequest, reply: FastifyReply
       isActive: true,
       $or: [
         { targetPlatforms: platform },
+        { targetPlatforms: 'all' },
         { targetPlatforms: { $exists: false } },
         { targetPlatforms: { $size: 0 } },
         { targetPlatforms: null },
@@ -635,14 +589,14 @@ export const getAppBanners = async (request: FastifyRequest, reply: FastifyReply
       userWishlists.forEach(w => wishlistedContentIdSet.add(w.contentId.toString()));
     }
 
-    const mappedBanners = banners.map(banner => {
+    const mappedBanners = await Promise.all(banners.map((banner) => {
       if (!banner.contentId) return mapBanner(banner, resolveUrl, 0, false, userPlan, false, request);
       const cid = (banner.contentId as any)._id.toString();
       const likeCount = (banner.contentId as any).likes || 0;
       const isLikedByUser = likedContentIdSet.has(cid);
       const isWishlisted = wishlistedContentIdSet.has(cid);
       return mapBanner(banner, resolveUrl, likeCount, isLikedByUser, userPlan, isWishlisted, request);
-    });
+    }));
 
     return reply.send({
       success: true,

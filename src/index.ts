@@ -26,10 +26,22 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
+process.on('unhandledRejection', (reason) => {
+  logger.error({ err: reason }, 'Unhandled promise rejection — server kept running');
+});
+
+process.on('uncaughtException', (err) => {
+  logger.error({ err }, 'Uncaught exception — server kept running');
+});
+
 async function startServer() {
   try {
     await Promise.all([connectMongoDB(), connectRedis()]);
-    await startVideoProcessingWorker();
+    try {
+      await startVideoProcessingWorker();
+    } catch (err) {
+      logger.error({ err }, 'Video processing worker did not start; API stays up and uploads return errors instead of exiting');
+    }
 
     // Seed database with initial data (Disabled on startup to preserve data)
     // await seedDatabase();
