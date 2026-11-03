@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { describePlanPeriod } from './planPeriod';
+import { describePlanPeriod, websitePlanPeriod } from './planPeriod';
 import {
   contentIsSeries,
   extractStorageKey,
@@ -108,6 +108,15 @@ test('plan period labels are not monthly for every duration', () => {
   assert.equal(describePlanPeriod('Months', 6).durationValue, 6);
   assert.notEqual(describePlanPeriod('Months', 6).duration.toLowerCase(), 'monthly');
   assert.notEqual(describePlanPeriod('Months', 12).duration.toLowerCase(), 'monthly');
+});
+
+test('website plan suffix is Month, 3 Months, 6 Months, or Year', () => {
+  assert.deepEqual(websitePlanPeriod('Month', 1), { suffix: 'Month', unit: 'Month', count: 1 });
+  assert.deepEqual(websitePlanPeriod('Months', 3), { suffix: '3 Months', unit: 'Months', count: 3 });
+  assert.deepEqual(websitePlanPeriod('Month', 6), { suffix: '6 Months', unit: 'Months', count: 6 });
+  assert.deepEqual(websitePlanPeriod('Months', 12), { suffix: 'Year', unit: 'Year', count: 1 });
+  assert.deepEqual(websitePlanPeriod('Year', 1), { suffix: 'Year', unit: 'Year', count: 1 });
+  assert.equal(describePlanPeriod('Months', 3).duration, '3 months');
 });
 
 test('ffmpeg stderr capture stays bounded and threads default to one', () => {
