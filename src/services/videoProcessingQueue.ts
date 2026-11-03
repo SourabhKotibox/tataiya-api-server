@@ -250,12 +250,16 @@ export async function pumpVideoProcessingQueue(): Promise<void> {
       const job = await claimJob();
       if (!job) break;
       activeJobs++;
-      void runJob(job).finally(() => {
+      void runJob(job).catch((error) => {
+        logger.error({ error, jobId: job._id }, 'Video job escaped its error handler');
+      }).finally(() => {
         activeJobs--;
         void pumpVideoProcessingQueue();
       });
     }
-  })().finally(() => { pumpPromise = undefined; });
+  })().catch((error) => {
+    logger.error({ error }, 'Video queue pump failed');
+  }).finally(() => { pumpPromise = undefined; });
   return pumpPromise;
 }
 

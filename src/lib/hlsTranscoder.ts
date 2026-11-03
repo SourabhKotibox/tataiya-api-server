@@ -1,7 +1,6 @@
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import ffprobeInstaller from '@ffprobe-installer/ffprobe';
-import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -18,6 +17,7 @@ import {
 } from './s3';
 import { probeVideo, extractPosterFrame, sanitizeFfmpegError } from './videoProbe';
 import { assertVideoDiskCapacity, createVideoWorkspace, estimateHlsOutputBytes } from './videoJobRuntime';
+import { ffmpegThreadCount, spawnCaptured } from './spawnCapture';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -153,7 +153,7 @@ export async function runTranscodeToHls(
           '-i', tempSourcePath,
           '-c:v', 'libx264',
           '-preset', 'ultrafast',
-          '-threads', '0',
+          '-threads', ffmpegThreadCount(),
           '-g', '48',
           '-sc_threshold', '0',
           '-keyint_min', '48',
@@ -169,14 +169,12 @@ export async function runTranscodeToHls(
           '-ac', '2',
           playlistPath,
         ];
-        const child = spawn(ffmpegInstaller.path || 'ffmpeg', args);
-        let stderr = '';
-        child.stderr.on('data', (d) => { stderr += d.toString(); });
-        child.on('error', reject);
-        child.on('close', (code) => {
-          if (code === 0) resolve(null);
-          else reject(new Error(stderr.trim() || `ffmpeg exited with code ${code}`));
-        });
+        spawnCaptured(ffmpegInstaller.path || 'ffmpeg', args)
+          .then((result) => {
+            if (result.code === 0) resolve(null);
+            else reject(new Error(result.stderr.trim() || `ffmpeg exited with code ${result.code}`));
+          })
+          .catch(reject);
       });
 
       if (!fs.existsSync(playlistPath)) throw new Error(`HLS playlist was not generated for ${preset.quality}`);

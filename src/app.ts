@@ -28,6 +28,9 @@ const fastify = Fastify({
 
 // Register request context lifecycle hook
 fastify.addHook('onRequest', (request, reply, done) => {
+  request.raw.on('error', (err) => {
+    request.log.warn({ err }, 'Request stream error');
+  });
   const authHeader = request.headers.authorization;
   let user: any = null;
   if (authHeader && authHeader.startsWith('Bearer ')) {
@@ -58,7 +61,7 @@ fastify.addHook('onRequest', (request, reply, done) => {
 // undefined, causing "Cannot destructure property of request.body" errors.
 fastify.addContentTypeParser(
   'application/json',
-  { parseAs: 'string' },
+  { parseAs: 'string', bodyLimit: 8 * 1024 * 1024 },
   (req, body, done) => {
     try {
       done(null, body ? JSON.parse(body as string) : {});
@@ -127,6 +130,17 @@ fastify.register(fastifyStatic, {
 
 // Register all routes under /api (local + correct nginx proxy_pass without URI strip).
 fastify.register(router, { prefix: '/api' });
+
+fastify.setErrorHandler((error, request, reply) => {
+  request.log.error({ err: error }, 'Request failed');
+  if (reply.sent) return;
+  const statusCode = error.statusCode && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 500;
+  reply.status(statusCode).send({
+    success: false,
+    error: error.message || 'Internal server error',
+    message: error.message || 'Internal server error',
+  });
+});
 
 // Also register at root so logins work when nginx strips the /api prefix, e.g.
 //   location /api/ { proxy_pass http://127.0.0.1:3000/; }  // strips /api

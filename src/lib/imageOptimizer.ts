@@ -6,6 +6,9 @@ import sharp from 'sharp';
 import path from 'path';
 import { logger } from './logger';
 
+sharp.cache(false);
+sharp.concurrency(1);
+
 export type ImageOptimizePreset = 'poster' | 'thumbnail' | 'banner' | 'seo' | 'default';
 
 const PRESETS: Record<
@@ -79,7 +82,7 @@ export async function optimizeImageBuffer(
 
   try {
     const { maxWidth, maxHeight, quality } = PRESETS[preset] || PRESETS.default;
-    const optimized = await sharp(input, { failOn: 'none' })
+    const optimized = await sharp(input, { failOn: 'none', limitInputPixels: 40_000_000, sequentialRead: true })
       .rotate() // honour EXIF orientation
       .resize({
         width: maxWidth,

@@ -3,6 +3,7 @@ import { webRequestDownload, webGetDownloads, webDeleteDownload } from '../contr
 import { SubscriptionPlanModel } from '../models/SubscriptionPlan';
 import { PlanLimitModel } from '../models/PlanLimit';
 import { SettingsModel } from '../models/Settings';
+import { describePlanPeriod } from '../lib/planPeriod';
 
 const webDownloadRoutes: FastifyPluginAsync = async (fastify) => {
   // Public: list active subscription plans — no auth required
@@ -22,11 +23,21 @@ const webDownloadRoutes: FastifyPluginAsync = async (fastify) => {
         success: true,
         data: plans.map((plan) => {
           const lim: any = limitsByPlan.get(plan._id.toString()) || {};
+          const period = describePlanPeriod(plan.duration, plan.durationValue);
           return {
             id: plan._id,
             name: plan.name,
+            // Keep the stored unit so the website still says "3 Months access".
             duration: plan.duration,
             durationValue: plan.durationValue,
+            durationUnit: period.durationUnit,
+            billingPeriod: period.billingPeriod,
+            period: period.period,
+            periodLabel: period.periodLabel,
+            planDuration: period.planDuration,
+            packageDuration: period.packageDuration,
+            validity: period.validity,
+            type: period.type,
             price: plan.price,
             discount: plan.discount,
             totalPrice: plan.totalPrice,

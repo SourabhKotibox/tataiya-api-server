@@ -395,6 +395,8 @@ export const uploadFilesToFolder = async (request: FastifyRequest, reply: Fastif
         savedFiles.push(uploadedFile);
       } else if (part.type === 'field' && part.fieldname === 'source') {
         source = part.value as string;
+      } else if (part.type === 'file') {
+        await uploadHandler.discardFilePart(part);
       }
     }
 

@@ -203,6 +203,8 @@ export const createPromotion = async (request: FastifyRequest, reply: FastifyRep
         } else if (part.fieldname === 'videoFile') {
           const uploadedFile = await uploadHandler.saveFileFromPart(part, request, 'VIDEO');
           data.videoUrl = uploadedFile.filePath;
+        } else {
+          await uploadHandler.discardFilePart(part);
         }
       }
     }
@@ -280,6 +282,8 @@ export const updatePromotion = async (request: FastifyRequest, reply: FastifyRep
           const uploadedFile = await uploadHandler.saveFileFromPart(part, request, 'VIDEO');
           uploadHandler.deleteUploadedFile(existingPromotion.videoUrl);
           data.videoUrl = uploadedFile.filePath;
+        } else {
+          await uploadHandler.discardFilePart(part);
         }
       }
     }

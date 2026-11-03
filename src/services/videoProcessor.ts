@@ -1,4 +1,3 @@
-import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import { Types } from 'mongoose';
@@ -8,6 +7,7 @@ import { MovieModel } from '../models/Movie';
 import { logger } from '../lib/logger';
 import { deleteS3Prefix, downloadFromS3ToFile, ensureVideoSourceInSpaces, getHlsPublicBaseUrl, requireSpacesSettings, uploadHlsFolderToS3, validateHlsPackage } from '../lib/s3';
 import { assertVideoDiskCapacity, createVideoWorkspace, estimateHlsOutputBytes } from '../lib/videoJobRuntime';
+import { ffmpegThreadCount, spawnCaptured } from '../lib/spawnCapture';
 
 const ffmpegPath = ffmpegInstaller?.path || 'ffmpeg';
 const ffprobePath = ffprobeInstaller?.path || 'ffprobe';
@@ -54,52 +54,29 @@ const RESOLUTION_MAP: Record<QualityName, string> = {
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
-const runCommand = (command: string, args: string[]): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args);
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
-    child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) resolve(stdout.trim());
-      else reject(new Error(stderr.trim() || `${command} exited with code ${code}`));
-    });
-  });
+const runCommand = async (command: string, args: string[]): Promise<string> => {
+  const result = await spawnCaptured(command, args);
+  if (result.code === 0) return result.stdout.trim();
+  throw new Error(result.stderr.trim() || `${command} exited with code ${result.code}`);
 };
 
-const runCommandWithProgress = (
+const runCommandWithProgress = async (
   command: string,
   args: string[],
   onProgress?: (data: { timeSeconds: number; speed?: string }) => void
 ): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args);
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
-    child.stderr.on('data', (chunk) => {
-      const text = chunk.toString();
-      stderr += text;
-      if (onProgress) {
-        const timeMatch = text.match(/time=(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)/);
-        const speedMatch = text.match(/speed=\s*([\d\.]+x)/);
-        if (timeMatch) {
-          const hours = parseFloat(timeMatch[1]);
-          const mins = parseFloat(timeMatch[2]);
-          const secs = parseFloat(timeMatch[3]);
-          const totalSecs = hours * 3600 + mins * 60 + secs;
-          onProgress({ timeSeconds: totalSecs, speed: speedMatch ? speedMatch[1] : undefined });
-        }
-      }
-    });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) resolve(stdout.trim());
-      else reject(new Error(stderr.trim() || `${command} exited with code ${code}`));
-    });
+  const result = await spawnCaptured(command, args, (text) => {
+    if (!onProgress) return;
+    const timeMatch = text.match(/time=(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)/);
+    const speedMatch = text.match(/speed=\s*([\d.]+x)/);
+    if (!timeMatch) return;
+    const hours = parseFloat(timeMatch[1]);
+    const mins = parseFloat(timeMatch[2]);
+    const secs = parseFloat(timeMatch[3]);
+    onProgress({ timeSeconds: hours * 3600 + mins * 60 + secs, speed: speedMatch ? speedMatch[1] : undefined });
   });
+  if (result.code === 0) return result.stdout.trim();
+  throw new Error(result.stderr.trim() || `${command} exited with code ${result.code}`);
 };
 
 const ensureDir = (dir: string) => {
@@ -322,7 +299,7 @@ const transcodeHlsSequential = async (opts: {
     if (duration !== undefined && duration > 0) args.push('-t', String(duration));
 
     args.push(
-      '-threads',      '0',
+      '-threads',      ffmpegThreadCount(),
       '-c:v',          'libx264',
       '-preset',       'ultrafast',
       '-g',            '48',

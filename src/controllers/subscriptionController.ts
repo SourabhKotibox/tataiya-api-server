@@ -4,6 +4,7 @@ import { SubscriptionPlanModel } from '../models/SubscriptionPlan';
 import { PlanLimitModel } from '../models/PlanLimit';
 import { SettingsModel } from '../models/Settings';
 import { UserModel } from '../models/User';
+import { describePlanPeriod } from '../lib/planPeriod';
 
 const roundCurrency = (value: number) => Math.round(value * 100) / 100;
 
@@ -663,18 +664,19 @@ export const listAppSubscriptionPlans = async (_request: FastifyRequest, reply: 
       success: true,
       data: plans.map((plan) => {
         const lim: any = limitsByPlan.get(plan._id.toString()) || {};
+        const period = describePlanPeriod(plan.duration, plan.durationValue);
         return {
           id: plan._id.toString(),
           name: plan.name,
-          duration: plan.duration,
-          durationValue: plan.durationValue,
+          // `duration` is what the installed app prints after the price slash.
+          // Stored unit ("Month"/"Months") made every plan render as /monthly.
+          ...period,
           price: plan.price,
           discount: plan.discount,
           totalPrice: plan.totalPrice,
           description: plan.description,
           level: plan.level,
           currencySymbol,
-          durationLabel: formatDurationLabel(plan.duration, plan.durationValue),
           limits: {
             ads: lim.ads ?? plan.level <= 1,
             adFree: lim.ads === false || (plan.level >= 2 && lim.ads !== true),
